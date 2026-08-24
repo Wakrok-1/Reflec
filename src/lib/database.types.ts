@@ -153,6 +153,7 @@ export type ChatMessage = {
   role: 'user' | 'assistant'
   content: string
   metadata: Record<string, unknown>
+  embedding: number[] | null
   created_at: string
 }
 

@@ -35,12 +35,14 @@ alter table public.profiles
   drop column favourites;
 
 -- ---------------------------------------------------------------------
--- embeddings on journal_entries / snaps (per-entry) and memory_summaries
--- (summary rows only)
+-- embeddings on journal_entries / snaps (per-entry), memory_summaries
+-- (summary rows only), and chat_history (summary rows only — PRD section
+-- 8 Sprint 0 note: "chat_history includes embedding on summary rows only")
 -- ---------------------------------------------------------------------
 alter table public.journal_entries add column embedding vector(384);
 alter table public.snaps add column embedding vector(384);
 alter table public.memory_summaries add column embedding vector(384);
+alter table public.chat_history add column embedding vector(384);
 
 -- memory_summaries gains a tier column: daily | weekly | monthly, plus
 -- "onboarding" for the one-off summary generated at the end of Sprint 1's
@@ -54,6 +56,8 @@ create index journal_entries_embedding_idx on public.journal_entries
 create index snaps_embedding_idx on public.snaps
   using hnsw (embedding vector_cosine_ops);
 create index memory_summaries_embedding_idx on public.memory_summaries
+  using hnsw (embedding vector_cosine_ops);
+create index chat_history_embedding_idx on public.chat_history
   using hnsw (embedding vector_cosine_ops);
 
 -- ---------------------------------------------------------------------

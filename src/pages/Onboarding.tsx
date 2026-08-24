@@ -103,6 +103,21 @@ export function Onboarding() {
         taste_context: tasteContext,
       })
 
+      // Taste Profile builds passively from conversation (PRD 5.2: "the
+      // user never fills a form") — onboarding's taste mentions are
+      // written directly rather than gated behind an approval bubble.
+      if (extraction.taste.length > 0) {
+        await supabase.from('taste_profile').insert(
+          extraction.taste.map((t) => ({
+            user_id: user.id,
+            category: t.category,
+            item: t.item,
+            context: t.context,
+            source: 'onboarding' as const,
+          })),
+        )
+      }
+
       if (extraction.summary) {
         const { data: summaryRow } = await supabase
           .from('memory_summaries')

@@ -26,10 +26,10 @@ export function SuggestionBubble({ suggestion, onAccept, onDismiss, busy }: Sugg
   const { title, detail } = describe(suggestion)
 
   return (
-    <div className="flex items-start justify-between gap-3 rounded-xl border border-reflection-200 bg-reflection-50 px-4 py-3">
-      <div>
-        <p className="text-sm font-medium text-reflection-900">{title}</p>
-        {detail && <p className="mt-0.5 text-sm text-reflection-500">{detail}</p>}
+    <div className="flex flex-col gap-3 rounded-xl border border-reflection-200 bg-reflection-50 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="min-w-0">
+        <p className="break-words text-sm font-medium text-reflection-900">{title}</p>
+        {detail && <p className="mt-0.5 break-words text-sm text-reflection-500">{detail}</p>}
       </div>
       <div className="flex shrink-0 gap-2">
         <button

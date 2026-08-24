@@ -9,14 +9,34 @@ import type { Profile, TasteCategory, TasteProfileItem } from '../lib/database.t
 import type { OnboardingExtraction } from '../types/onboarding'
 import type { ProfileFieldSuggestion, Suggestion, TasteEntrySuggestion } from '../types/suggestions'
 
-const TASTE_CATEGORIES: { key: TasteCategory; label: string }[] = [
-  { key: 'music', label: 'Music' },
-  { key: 'books', label: 'Books & Writing' },
-  { key: 'sport', label: 'Sport & Movement' },
-  { key: 'food', label: 'Food' },
-  { key: 'aesthetics', label: 'Aesthetics' },
-  { key: 'hobbies', label: 'Hobbies' },
-  { key: 'symbols', label: 'Recurring Symbols' },
+const TASTE_CATEGORIES: { key: TasteCategory; label: string; emptyHint: string }[] = [
+  {
+    key: 'music',
+    label: 'Music',
+    emptyHint: 'Nothing yet — the tracks you turn to will show up here once you mention them.',
+  },
+  {
+    key: 'books',
+    label: 'Books & Writing',
+    emptyHint: 'Nothing yet — the stories that stick with you will show up here.',
+  },
+  {
+    key: 'sport',
+    label: 'Sport & Movement',
+    emptyHint: 'Nothing yet — how you move, and why, shows up here over time.',
+  },
+  { key: 'food', label: 'Food', emptyHint: 'Nothing yet — what you crave in different moods shows up here.' },
+  {
+    key: 'aesthetics',
+    label: 'Aesthetics',
+    emptyHint: "Nothing yet — the colours and spaces you're drawn to show up here.",
+  },
+  { key: 'hobbies', label: 'Hobbies', emptyHint: 'Nothing yet — what you do with free time shows up here.' },
+  {
+    key: 'symbols',
+    label: 'Recurring Symbols',
+    emptyHint: 'Nothing yet — words and images that keep appearing in your writing show up here.',
+  },
 ]
 
 function buildSuggestions(extraction: OnboardingExtraction): Suggestion[] {
@@ -41,15 +61,10 @@ function buildSuggestions(extraction: OnboardingExtraction): Suggestion[] {
   p.core_values.forEach((v) =>
     out.push({ type: 'profile_field', id: `sugg-value-${v}`, field: 'core_values', label: 'Core Value', value: v }),
   )
-  extraction.taste.forEach((t) =>
-    out.push({
-      type: 'taste_entry',
-      id: `sugg-taste-${t.category}-${t.item}`,
-      category: t.category,
-      item: t.item,
-      context: t.context,
-    }),
-  )
+  // Taste is written directly to taste_profile on onboarding completion
+  // (PRD 5.2: it "never fills a form"), not gated behind a bubble here —
+  // suggestion bubbles for taste are reserved for what the AI notices
+  // later, in ongoing chat.
 
   return out
 }
@@ -187,27 +202,41 @@ export function CharacterProfile() {
       )}
 
       <section className="mt-8 space-y-4 rounded-xl border border-reflection-200 bg-white p-6">
-        <ProfileField label="Name" value={profile.name} onSave={(v) => saveField(user!.id, 'name', v, refresh)} />
+        <ProfileField
+          label="Name"
+          value={profile.name}
+          emptyHint="Not set yet — tell Your Reflection what to call you."
+          onSave={(v) => saveField(user!.id, 'name', v, refresh)}
+        />
         <ProfileField
           label="Age"
           value={profile.age != null ? String(profile.age) : null}
+          emptyHint="Not set — share it whenever you're comfortable."
           onSave={(v) => saveField(user!.id, 'age', v ? Number(v) : null, refresh)}
         />
-        <ProfileField label="Class" value={profile.class} onSave={(v) => saveField(user!.id, 'class', v, refresh)} />
+        <ProfileField
+          label="Class"
+          value={profile.class}
+          emptyHint="You haven't named your archetype yet — Survivor? Builder? Dreamer? Whatever fits."
+          onSave={(v) => saveField(user!.id, 'class', v, refresh)}
+        />
         <ProfileField
           label="Personal Philosophy"
           value={profile.philosophy}
           multiline
+          emptyHint="Nothing here yet. This fills in as you talk about how you live."
           onSave={(v) => saveField(user!.id, 'philosophy', v, refresh)}
         />
         <ChipList
           label="Unique Strengths & Abilities"
           values={profile.strengths as string[]}
+          emptyHint="Nothing yet — these surface as you talk, or add your own below."
           onChange={(v) => saveField(user!.id, 'strengths', v, refresh)}
         />
         <ChipList
           label="Core Values"
           values={profile.core_values as string[]}
+          emptyHint="Nothing yet — these surface gradually from journaling and chat."
           onChange={(v) => saveField(user!.id, 'core_values', v, refresh)}
         />
       </section>
@@ -218,11 +247,12 @@ export function CharacterProfile() {
           Built from what you share in chat and journaling — add to it any time.
         </p>
         <div className="mt-4 space-y-5">
-          {TASTE_CATEGORIES.map(({ key, label }) => (
+          {TASTE_CATEGORIES.map(({ key, label, emptyHint }) => (
             <TasteCategorySection
               key={key}
               category={key}
               label={label}
+              emptyHint={emptyHint}
               items={groupedTaste.get(key) ?? []}
               onAdded={loadTaste}
             />
@@ -245,11 +275,13 @@ function ProfileField({
   label,
   value,
   multiline,
+  emptyHint,
   onSave,
 }: {
   label: string
   value: string | null
   multiline?: boolean
+  emptyHint: string
   onSave: (value: string | null) => void
 }) {
   const [editing, setEditing] = useState(false)
@@ -260,13 +292,20 @@ function ProfileField({
   if (!editing) {
     return (
       <div>
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <p className="text-xs font-medium uppercase tracking-wide text-reflection-400">{label}</p>
-          <button onClick={() => setEditing(true)} className="text-xs text-reflection-500 hover:text-reflection-700">
-            Edit
+          <button
+            onClick={() => setEditing(true)}
+            className="shrink-0 text-xs text-reflection-500 hover:text-reflection-700"
+          >
+            {value ? 'Edit' : 'Add'}
           </button>
         </div>
-        <p className="mt-1 text-sm text-reflection-900">{value || <span className="text-reflection-400">—</span>}</p>
+        {value ? (
+          <p className="mt-1 text-sm text-reflection-900">{value}</p>
+        ) : (
+          <p className="mt-1 text-sm italic text-reflection-400">{emptyHint}</p>
+        )}
       </div>
     )
   }
@@ -310,10 +349,12 @@ function ProfileField({
 function ChipList({
   label,
   values,
+  emptyHint,
   onChange,
 }: {
   label: string
   values: string[]
+  emptyHint: string
   onChange: (values: string[]) => void
 }) {
   const [draft, setDraft] = useState('')
@@ -328,32 +369,39 @@ function ChipList({
   return (
     <div>
       <p className="text-xs font-medium uppercase tracking-wide text-reflection-400">{label}</p>
-      <div className="mt-1.5 flex flex-wrap gap-1.5">
-        {values.map((v) => (
-          <span
-            key={v}
-            className="inline-flex items-center gap-1 rounded-full bg-reflection-100 px-2.5 py-1 text-xs text-reflection-700"
-          >
-            {v}
-            <button
-              onClick={() => onChange(values.filter((x) => x !== v))}
-              className="text-reflection-400 hover:text-reflection-600"
-              aria-label={`Remove ${v}`}
+      {values.length > 0 ? (
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {values.map((v) => (
+            <span
+              key={v}
+              className="inline-flex items-center gap-1 rounded-full bg-reflection-100 px-2.5 py-1 text-xs text-reflection-700"
             >
-              ×
-            </button>
-          </span>
-        ))}
-      </div>
-      <div className="mt-2 flex gap-2">
+              {v}
+              <button
+                onClick={() => onChange(values.filter((x) => x !== v))}
+                className="text-reflection-400 hover:text-reflection-600"
+                aria-label={`Remove ${v}`}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-1 text-sm italic text-reflection-400">{emptyHint}</p>
+      )}
+      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
         <input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), add())}
           placeholder="Add one…"
-          className="flex-1 rounded-lg border border-reflection-200 px-2 py-1 text-xs outline-none focus:border-reflection-500"
+          className="flex-1 rounded-lg border border-reflection-200 px-2 py-1.5 text-xs outline-none focus:border-reflection-500"
         />
-        <button onClick={add} className="rounded-md border border-reflection-200 px-2 py-1 text-xs text-reflection-500">
+        <button
+          onClick={add}
+          className="rounded-md border border-reflection-200 px-2 py-1.5 text-xs text-reflection-500 sm:px-2 sm:py-1"
+        >
           Add
         </button>
       </div>
@@ -364,11 +412,13 @@ function ChipList({
 function TasteCategorySection({
   category,
   label,
+  emptyHint,
   items,
   onAdded,
 }: {
   category: TasteCategory
   label: string
+  emptyHint: string
   items: TasteProfileItem[]
   onAdded: () => void
 }) {
@@ -398,7 +448,7 @@ function TasteCategorySection({
   return (
     <div>
       <p className="text-xs font-medium uppercase tracking-wide text-reflection-400">{label}</p>
-      {items.length > 0 && (
+      {items.length > 0 ? (
         <ul className="mt-1.5 space-y-1">
           {items.map((t) => (
             <li key={t.id} className="flex items-start justify-between gap-2 text-sm">
@@ -415,21 +465,26 @@ function TasteCategorySection({
             </li>
           ))}
         </ul>
+      ) : (
+        <p className="mt-1 text-sm italic text-reflection-400">{emptyHint}</p>
       )}
-      <div className="mt-2 flex gap-2">
+      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
         <input
           value={item}
           onChange={(e) => setItem(e.target.value)}
           placeholder="Add…"
-          className="w-32 rounded-lg border border-reflection-200 px-2 py-1 text-xs outline-none focus:border-reflection-500"
+          className="rounded-lg border border-reflection-200 px-2 py-1.5 text-xs outline-none focus:border-reflection-500 sm:w-32"
         />
         <input
           value={context}
           onChange={(e) => setContext(e.target.value)}
           placeholder="Why / when (optional)"
-          className="flex-1 rounded-lg border border-reflection-200 px-2 py-1 text-xs outline-none focus:border-reflection-500"
+          className="flex-1 rounded-lg border border-reflection-200 px-2 py-1.5 text-xs outline-none focus:border-reflection-500"
         />
-        <button onClick={add} className="rounded-md border border-reflection-200 px-2 py-1 text-xs text-reflection-500">
+        <button
+          onClick={add}
+          className="rounded-md border border-reflection-200 px-2 py-1.5 text-xs text-reflection-500 sm:px-2 sm:py-1"
+        >
           Add
         </button>
       </div>

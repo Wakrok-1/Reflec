@@ -41,14 +41,14 @@ export function Home() {
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-12">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
           <h1 className="text-xl font-semibold text-reflection-900">Your Reflection</h1>
-          <p className="text-sm text-reflection-500">Signed in as {user?.email}</p>
+          <p className="truncate text-sm text-reflection-500">Signed in as {user?.email}</p>
         </div>
         <button
           onClick={signOut}
-          className="rounded-lg border border-reflection-200 px-3 py-1.5 text-sm text-reflection-700 hover:bg-reflection-100"
+          className="shrink-0 rounded-lg border border-reflection-200 px-3 py-1.5 text-sm text-reflection-700 hover:bg-reflection-100"
         >
           Sign out
         </button>
