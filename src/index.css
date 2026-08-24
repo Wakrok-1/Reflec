@@ -1,6 +1,40 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --color-linen: #EDE8E1;
+  --color-cream: #FAF8F5;
+  --color-dove: #D4C8B8;
+  --color-stone: #8A7A6A;
+  --color-charcoal: #3A3530;
+  --color-warm-muted: #9E9080;
+  --color-sage: #B5C9C1;
+  --color-medal: #D4AF6A;
+
+  --border-default: 0.5px solid rgba(180,170,158,0.3);
+  --border-strong: 0.5px solid rgba(180,170,158,0.5);
+
+  --gradient-apple: linear-gradient(145deg, #c084fc 0%, #818cf8 35%, #3b82f6 65%, #60a5fa 100%);
+  --gradient-user-bubble: linear-gradient(135deg, #818cf8, #3b82f6);
+  --gradient-goal-progress: linear-gradient(90deg, #818cf8, #c084fc);
+  --gradient-dove-card: linear-gradient(135deg, #e8ddd2 0%, #d4c8b8 60%, #c8bab0 100%);
+  --gradient-medal: linear-gradient(135deg, #f0c060, #d4922a, #f0c060);
+
+  --radius-card: 20px;
+  --radius-card-lg: 24px;
+  --radius-island: 28px;
+  --radius-pill: 20px;
+  --radius-bubble: 18px;
+
+  --font-display: 300 24px/1.2 'Poppins', sans-serif;
+  --font-heading: 600 15px/1.4 'Poppins', sans-serif;
+  --font-body: 400 13px/1.65 'Poppins', sans-serif;
+  --font-caption: 400 11px/1.6 'Poppins', sans-serif;
+  --font-label: 600 10px/1 'Poppins', sans-serif;
+}
 
 html,
 body,
@@ -9,5 +43,8 @@ body,
 }
 
 body {
-  @apply bg-reflection-50 text-reflection-900 antialiased;
+  font-family: 'Poppins', sans-serif;
+  background: var(--color-linen);
+  color: var(--color-charcoal);
+  -webkit-font-smoothing: antialiased;
 }
