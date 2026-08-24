@@ -2,17 +2,18 @@
 
 A personal AI companion that learns how you think, feel, and grow — from your
 own words, journal entries, and activity data. See the full product spec in
-the PRD shared with this repo.
+the PRD shared with this repo (v1.3).
 
-This repo is at **Sprint 0 — Foundation**: project scaffold, database schema,
-auth, and a Claude API connectivity check. Chat, journaling, goals, charts,
-and integrations land in later sprints.
+**Status:** Sprint 0 (Foundation) and Sprint 1 (Onboarding + Character
+Profile) are built. Chat core, journaling, goals, charts, and integrations
+land in later sprints.
 
 ## Stack
 
 - Frontend: React + Tailwind CSS (Vite)
-- Backend / DB / Auth: Supabase (Postgres + RLS)
-- AI: Claude API (via a Vercel serverless function, key never reaches the browser)
+- Backend / DB / Auth: Supabase (Postgres + RLS + pgvector + pg_cron)
+- Embeddings: Supabase built-in `gte-small` (384 dims), via a Supabase Edge Function
+- AI: Groq (`openai/gpt-oss-120b`, fallback `openai/gpt-oss-20b`) via a Vercel serverless function — key never reaches the browser
 - Hosting: Vercel
 
 ## Local setup
@@ -24,11 +25,22 @@ and integrations land in later sprints.
    ```
 
 2. **Create a Supabase project** at [supabase.com](https://supabase.com), then:
-   - In the SQL editor, run `supabase/migrations/0001_init.sql`. This creates
-     every Sprint 0 table (`profiles`, `journal_entries`, `snaps`, `goals`,
+   - Under **Database → Extensions**, enable `vector` (pgvector) and `pg_cron`
+     if they aren't already on.
+   - In the SQL editor, run the migrations in order:
+     `supabase/migrations/0001_init.sql`, then
+     `supabase/migrations/0002_v1_3_memory_upgrade.sql`. Together these
+     create every table (`profiles`, `journal_entries`, `snaps`, `goals`,
      `suggestions`, `calendar_events`, `strava_data`, `chat_history`,
-     `memory_summaries`) with row-level security so each account can only
-     ever see its own data.
+     `memory_summaries`, `taste_profile`, `pattern_extractions`,
+     `dismissed_suggestions`, `response_signals`) with row-level security so
+     each account can only ever see its own data.
+   - Deploy the embedding Edge Function:
+     ```bash
+     npx supabase login
+     npx supabase link --project-ref <your-project-ref>
+     npx supabase functions deploy embed-text
+     ```
    - Under **Authentication → Providers**, enable **Email** and **Google**.
      For Google, you'll need an OAuth client ID/secret from the
      [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
@@ -40,8 +52,8 @@ and integrations land in later sprints.
    - Copy the project's **URL** and **anon public key** from
      **Project Settings → API**.
 
-3. **Get a Claude API key** from the
-   [Anthropic Console](https://console.anthropic.com/).
+3. **Get a Groq API key** from the
+   [Groq Console](https://console.groq.com/keys) — free tier, no credit card.
 
 4. **Configure environment variables**
 
@@ -49,8 +61,7 @@ and integrations land in later sprints.
    cp .env.example .env
    ```
 
-   Fill in `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and
-   `ANTHROPIC_API_KEY`.
+   Fill in `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `GROQ_API_KEY`.
 
 5. **Run the app**
 
@@ -58,13 +69,16 @@ and integrations land in later sprints.
    npm run dev
    ```
 
-   Sign up, confirm your email (or use Google sign-in), and use the
-   "Test Claude connection" button on the home screen to confirm the
-   `/api/claude-test` function can reach Claude with your key.
+   Sign up (or use Google sign-in) and you'll land straight in the AI
+   interview onboarding flow. Finishing it takes you to the Character
+   Profile page, where the AI's suggestions from the interview show up as
+   approval bubbles.
 
    Note: `/api/*` serverless functions only run under `vercel dev`, not the
    plain Vite dev server. Use `npx vercel dev` instead of `npm run dev` if
-   you want to exercise the Claude test button locally without deploying.
+   you want to exercise onboarding/chat locally without deploying — the
+   onboarding interview and profile extraction both depend on those
+   functions.
 
 ## Deploying to Vercel
 
@@ -81,23 +95,41 @@ and integrations land in later sprints.
 ```
 src/
   contexts/AuthContext.tsx   Supabase auth session state
+  hooks/useProfile.ts        Loads/refreshes the current user's profile row
   lib/supabase.ts            Supabase client
   lib/database.types.ts      Hand-written types mirroring the SQL schema
-  pages/                     Login, Signup, AuthCallback, Home
-  components/ProtectedRoute.tsx
+  lib/api.ts                 Authenticated fetch wrapper for /api/*
+  lib/embeddings.ts          Calls the embed-text Edge Function
+  lib/suggestions.ts         Suggestion fingerprinting + dismissal tracking
+  types/onboarding.ts        Shape of the onboarding extraction JSON
+  types/suggestions.ts       Suggestion bubble discriminated union
+  pages/                     Login, Signup, AuthCallback, Home, Onboarding, CharacterProfile
+  components/
+    ProtectedRoute.tsx
+    SuggestionBubble.tsx      Accept/Dismiss approval bubble (PRD 5.2, 7.3)
 api/
-  claude-test.ts             Server-side Claude API connectivity check
-  _lib/verifyUser.ts         Verifies the caller's Supabase session
+  onboarding-chat.ts          One turn of the AI interview (Groq)
+  onboarding-finalize.ts      Extracts profile/taste suggestions (Groq, JSON mode)
+  groq-test.ts                Server-side Groq connectivity check
+  _lib/verifyUser.ts          Verifies the caller's Supabase session
+  _lib/groq.ts                Groq chat completions wrapper (primary + fallback model)
+  _lib/systemPrompt.ts        IDENTITY/RULES/BEHAVIOUR prompt blocks (PRD 7.1)
 supabase/
-  migrations/0001_init.sql   Core schema + RLS policies
+  migrations/0001_init.sql                  Core schema + RLS policies
+  migrations/0002_v1_3_memory_upgrade.sql   pgvector, pg_cron, taste_profile,
+                                             pattern_extractions, dismissed_suggestions,
+                                             response_signals, embedding columns + HNSW
+  functions/embed-text/index.ts             Supabase Edge Function: gte-small embeddings
 ```
 
 ## Security notes
 
-- The Claude API key lives only in Vercel's server environment
-  (`ANTHROPIC_API_KEY`, no `VITE_` prefix) and is never sent to the browser.
+- The Groq API key lives only in Vercel's server environment (`GROQ_API_KEY`,
+  no `VITE_` prefix) and is never sent to the browser.
 - Every table has row-level security scoped to `auth.uid()`, so one account
   can never read or write another account's rows, even via the public anon
   key.
-- `/api/claude-test` requires a valid Supabase session token before it will
-  call Claude, so the endpoint can't be used as an open proxy.
+- `/api/*` functions require a valid Supabase session token before doing
+  anything, so they can't be used as an open proxy.
+- The `embed-text` Edge Function also requires a valid Supabase session JWT
+  (default Edge Function behaviour) — it can't be called anonymously.

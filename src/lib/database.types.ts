@@ -1,25 +1,26 @@
-// Hand-written types mirroring supabase/migrations/0001_init.sql.
-// Once a live Supabase project exists, regenerate with:
+// Hand-written types mirroring supabase/migrations/0001_init.sql and
+// 0002_v1_3_memory_upgrade.sql. Once a live Supabase project exists,
+// regenerate with:
 //   npx supabase gen types typescript --project-id <ref> > src/lib/database.types.ts
 
-export interface Profile {
+export type Profile = {
   id: string
   name: string | null
   age: number | null
   class: string | null
   strengths: unknown[]
   philosophy: string | null
-  favourites: Record<string, unknown>
   core_values: unknown[]
   patterns: unknown[]
   summary_memory: string
   onboarding_completed_at: string | null
+  personality_emergence_unlocked: boolean
   notification_prefs: { enabled: boolean; frequency: 'daily' | 'weekly' | 'off' }
   created_at: string
   updated_at: string
 }
 
-export interface JournalEntry {
+export type JournalEntry = {
   id: string
   user_id: string
   mode: 'full' | 'snap'
@@ -31,11 +32,12 @@ export interface JournalEntry {
   linked_goal_ids: string[]
   source: 'chat' | 'manual' | 'apple_journal_import'
   entry_date: string
+  embedding: number[] | null
   created_at: string
   updated_at: string
 }
 
-export interface Snap {
+export type Snap = {
   id: string
   user_id: string
   content: string
@@ -43,10 +45,56 @@ export interface Snap {
   energy_level: number | null
   themes: unknown[]
   linked_goal_id: string | null
+  embedding: number[] | null
   created_at: string
 }
 
-export interface Goal {
+export type TasteCategory = 'music' | 'books' | 'sport' | 'food' | 'aesthetics' | 'hobbies' | 'symbols'
+
+export type TasteProfileItem = {
+  id: string
+  user_id: string
+  category: TasteCategory
+  item: string
+  context: string | null
+  source: 'onboarding' | 'chat' | 'manual'
+  created_at: string
+  updated_at: string
+}
+
+export type PatternExtraction = {
+  user_id: string
+  emotional_triggers: string[]
+  coping_patterns: string[]
+  energy_patterns: string[]
+  communication_style: string | null
+  recurring_themes: string[]
+  taste_context: Record<string, { item: string; context: string | null }[]>
+  writing_signature: Record<string, unknown>
+  response_preference: Record<string, unknown>
+  updated_at: string
+}
+
+export type DismissedSuggestionType = 'profile_field' | 'taste_entry' | 'growth_insight'
+
+export type DismissedSuggestion = {
+  id: string
+  user_id: string
+  suggestion_type: DismissedSuggestionType
+  fingerprint: string
+  payload: Record<string, unknown>
+  created_at: string
+}
+
+export type ResponseSignal = {
+  id: string
+  user_id: string
+  chat_message_id: string | null
+  felt_right: boolean
+  created_at: string
+}
+
+export type Goal = {
   id: string
   user_id: string
   type: 'big_goal' | 'increment' | 'bucket_list'
@@ -61,7 +109,7 @@ export interface Goal {
   updated_at: string
 }
 
-export interface Suggestion {
+export type Suggestion = {
   id: string
   user_id: string
   category: 'book' | 'music' | 'habit' | 'experience' | 'food' | 'journal_prompt'
@@ -73,7 +121,7 @@ export interface Suggestion {
   responded_at: string | null
 }
 
-export interface CalendarEvent {
+export type CalendarEvent = {
   id: string
   user_id: string
   google_event_id: string | null
@@ -85,7 +133,7 @@ export interface CalendarEvent {
   created_at: string
 }
 
-export interface StravaData {
+export type StravaData = {
   id: string
   user_id: string
   strava_activity_id: number
@@ -99,7 +147,7 @@ export interface StravaData {
   created_at: string
 }
 
-export interface ChatMessage {
+export type ChatMessage = {
   id: string
   user_id: string
   role: 'user' | 'assistant'
@@ -108,64 +156,73 @@ export interface ChatMessage {
   created_at: string
 }
 
-export interface MemorySummary {
+export type MemorySummary = {
   id: string
   user_id: string
   period_start: string
   period_end: string
   summary: string
+  tier: 'onboarding' | 'daily' | 'weekly' | 'monthly'
+  embedding: number[] | null
   created_at: string
 }
 
-export interface Database {
+// supabase-js's generic client requires each table to carry a
+// `Relationships` array and the schema to declare `Views`/`Functions`
+// (see @supabase/postgrest-js's GenericTable/GenericSchema) — otherwise
+// it silently falls back to `never` for every row type.
+type Table<Row, Insert, Update = Partial<Row>> = {
+  Row: Row
+  Insert: Insert
+  Update: Update
+  Relationships: []
+}
+
+export type Database = {
   public: {
     Tables: {
-      profiles: { Row: Profile; Insert: Partial<Profile> & { id: string }; Update: Partial<Profile> }
-      journal_entries: {
-        Row: JournalEntry
-        Insert: Partial<JournalEntry> & { user_id: string; content: string }
-        Update: Partial<JournalEntry>
-      }
-      snaps: {
-        Row: Snap
-        Insert: Partial<Snap> & { user_id: string; content: string }
-        Update: Partial<Snap>
-      }
-      goals: {
-        Row: Goal
-        Insert: Partial<Goal> & { user_id: string; type: Goal['type']; title: string }
-        Update: Partial<Goal>
-      }
-      suggestions: {
-        Row: Suggestion
-        Insert: Partial<Suggestion> & { user_id: string; category: Suggestion['category']; title: string }
-        Update: Partial<Suggestion>
-      }
-      calendar_events: {
-        Row: CalendarEvent
-        Insert: Partial<CalendarEvent> & { user_id: string; title: string; start_time: string }
-        Update: Partial<CalendarEvent>
-      }
-      strava_data: {
-        Row: StravaData
-        Insert: Partial<StravaData> & { user_id: string; strava_activity_id: number }
-        Update: Partial<StravaData>
-      }
-      chat_history: {
-        Row: ChatMessage
-        Insert: Partial<ChatMessage> & { user_id: string; role: ChatMessage['role']; content: string }
-        Update: Partial<ChatMessage>
-      }
-      memory_summaries: {
-        Row: MemorySummary
-        Insert: Partial<MemorySummary> & {
+      profiles: Table<Profile, Partial<Profile> & { id: string }>
+      journal_entries: Table<JournalEntry, Partial<JournalEntry> & { user_id: string; content: string }>
+      snaps: Table<Snap, Partial<Snap> & { user_id: string; content: string }>
+      goals: Table<Goal, Partial<Goal> & { user_id: string; type: Goal['type']; title: string }>
+      suggestions: Table<
+        Suggestion,
+        Partial<Suggestion> & { user_id: string; category: Suggestion['category']; title: string }
+      >
+      calendar_events: Table<
+        CalendarEvent,
+        Partial<CalendarEvent> & { user_id: string; title: string; start_time: string }
+      >
+      strava_data: Table<StravaData, Partial<StravaData> & { user_id: string; strava_activity_id: number }>
+      chat_history: Table<
+        ChatMessage,
+        Partial<ChatMessage> & { user_id: string; role: ChatMessage['role']; content: string }
+      >
+      memory_summaries: Table<
+        MemorySummary,
+        Partial<MemorySummary> & {
           user_id: string
           period_start: string
           period_end: string
           summary: string
         }
-        Update: Partial<MemorySummary>
-      }
+      >
+      taste_profile: Table<
+        TasteProfileItem,
+        Partial<TasteProfileItem> & { user_id: string; category: TasteCategory; item: string }
+      >
+      pattern_extractions: Table<PatternExtraction, Partial<PatternExtraction> & { user_id: string }>
+      dismissed_suggestions: Table<
+        DismissedSuggestion,
+        Partial<DismissedSuggestion> & {
+          user_id: string
+          suggestion_type: DismissedSuggestionType
+          fingerprint: string
+        }
+      >
+      response_signals: Table<ResponseSignal, Partial<ResponseSignal> & { user_id: string }>
     }
+    Views: Record<string, never>
+    Functions: Record<string, never>
   }
 }
