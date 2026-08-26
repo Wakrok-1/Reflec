@@ -22,7 +22,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return
   }
 
+  // Tracks which step was in flight when something throws, so Vercel's logs
+  // say *where* chat failed instead of just "chat failed" — the difference
+  // between "auth is broken" and "Groq is down" at a glance.
+  let stage = 'start'
+
   try {
+    stage = 'verify_user'
     const accessToken = req.headers.authorization?.replace(/^Bearer\s+/i, '')
     const user = await verifyUser(req.headers.authorization)
     if (!user || !accessToken) {
@@ -30,6 +36,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return
     }
 
+    stage = 'parse_body'
     const body = req.body as ChatRequestBody
     if (!Array.isArray(body.messages) || body.messages.length === 0) {
       res.status(400).json({ error: '"messages" must be a non-empty array' })
@@ -40,8 +47,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return
     }
 
+    stage = 'check_groq_key'
     const apiKey = process.env.GROQ_API_KEY
     if (!apiKey) {
+      console.error('chat failed at stage "check_groq_key": GROQ_API_KEY is not set in this environment')
       res.status(500).json({ error: 'GROQ_API_KEY is not configured on the server' })
       return
     }
@@ -52,8 +61,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return
     }
 
+    stage = 'create_scoped_client'
     const supabase = createUserScopedClient(accessToken)
 
+    stage = 'load_user_context'
     const [{ data: profile, error: profileError }, { data: patterns }, { data: summaries }, { data: goalRows }] =
       await Promise.all([
         supabase.from('profiles').select('*').eq('id', user.id).single(),
@@ -68,6 +79,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ])
 
     if (profileError || !profile) {
+      console.error('chat failed at stage "load_user_context": no profile row for this user', profileError)
       res.status(500).json({ error: 'Could not load user profile' })
       return
     }
@@ -75,11 +87,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Embed the new message once, up front: this exact embedding is both
     // (a) the query vector for this request's semantic search, and (b) what
     // gets stored on the chat_history row — no reason to compute it twice.
+    stage = 'embed_message'
     const { data: embedData } = await supabase.functions.invoke<{ embedding: number[] }>('embed-text', {
       body: { text: latestUserMessage.content },
     })
     const embedding = embedData?.embedding ?? null
 
+    stage = 'vector_search'
     let vectorHits: VectorHit[] = []
     if (embedding) {
       const [journalHits, chatHits] = await Promise.all([
@@ -116,6 +130,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       vectorHits = combined.sort((a, b) => b.similarity - a.similarity).slice(0, VECTOR_HITS_TOTAL)
     }
 
+    stage = 'insert_user_message'
     await supabase.from('chat_history').insert({
       user_id: user.id,
       role: 'user',
@@ -123,6 +138,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       embedding,
     })
 
+    stage = 'build_system_prompt'
     const bundle: MemoryBundle = {
       profile: profile as Profile,
       patterns: (patterns as PatternExtraction) ?? null,
@@ -142,14 +158,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     groqMessages.push(...body.messages)
 
+    stage = 'call_groq_stream'
     let upstream: Response
     try {
       upstream = await streamGroq(apiKey, { model: GROQ_PRIMARY_MODEL, messages: groqMessages })
     } catch (err) {
+      console.error('chat failed at stage "call_groq_stream"', err)
       res.status(502).json({ error: 'Groq API request failed', detail: String(err) })
       return
     }
 
+    stage = 'stream_response'
     res.setHeader('Content-Type', 'text/plain; charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache, no-transform')
 
@@ -179,6 +198,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // The client already has the full reply by now — everything below is
     // background bookkeeping the user never waits on.
+    stage = 'background_bookkeeping'
     await Promise.allSettled([
       supabase.from('chat_history').insert({ user_id: user.id, role: 'assistant', content: assembled }),
       supabase.functions.invoke('extract-patterns', {
@@ -192,11 +212,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // becomes Vercel's own plain-text crash page, which breaks every
     // client-side `response.json()` call. If the response has already
     // started streaming, headers are sent and we can only end it cleanly.
-    console.error('chat failed', err)
+    const detail =
+      err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : { message: String(err) }
+    console.error(`chat failed at stage "${stage}"`, detail)
     if (res.headersSent) {
       res.end()
     } else {
-      res.status(500).json({ error: 'Unexpected server error', detail: String(err) })
+      res.status(500).json({ error: 'Unexpected server error', stage, detail: detail.message })
     }
   }
 }

@@ -64,6 +64,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       patterns: (patterns as PatternExtraction) ?? null,
       summaries: summaries ?? [],
       vectorHits: [],
+      activeGoals: [],
     }
     const { prompt: systemPrompt } = renderSystemPrompt(bundle)
 
