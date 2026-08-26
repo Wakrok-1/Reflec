@@ -8,7 +8,9 @@
 > section 8`, `v1.1 section 5.5`, `Section 11`). Every section number
 > below matches a citation that already exists in the code. v1.0 covered
 > Sprints 1–3; v1.1 adds Section 5.5 (Goals + Achievements) and the
-> Phosphor iconography rule for Sprint 4.
+> Phosphor iconography rule for Sprint 4, and extends Section 5.2 with the
+> Connected Apps / Notifications UI for Sprint 5 (no version bump — same
+> visual system, no new tokens).
 
 ## 1. Design Principles
 
@@ -98,6 +100,18 @@ group independently addable/removable. AI suggestions appear above the
 fold as bubbles (5.6), never inline with the fields they'd modify, so
 accept/dismiss is always a deliberate, separate action.
 
+**Connected (Sprint 5)** — a card between the profile fields and Taste
+Profile: cream background, hair border, matching the rest of the app's
+card language. Section label "Connected", 10px/600 uppercase stone.
+Google Calendar shown as a status row — a 2px sage dot + "Connected", or
+a cream pill button (hair border, Poppins 12px/500, a Phosphor calendar
+icon) reading "Connect" — with a small "Disconnect" text link when
+connected. Below a hair-border divider, "Notifications": one row per
+type (push notifications, daily check-in, goal reminders, suggestions
+ready), each a small pill toggle switch (sage when on, translating a 4px
+circle across an 18px track — the same sage used everywhere else for a
+positive/checked state), plus a quiet-hours start/end time-of-day pair.
+
 ### 5.3 Chat
 
 - **TypewriterQuote** — a rotating quote header, one per day
@@ -109,6 +123,11 @@ accept/dismiss is always a deliberate, separate action.
 - **SnapInput** — a pill-shaped quick-capture trigger that opens a
   bottom-sheet-style textarea (`slide-up-fade-in`, 7) with no title, no
   formatting controls.
+- **Calendar confirm bubble (Sprint 5)** — same shape and placement as the
+  search-confirm bubble: cream card, hair border, a Phosphor
+  `CalendarPlus` icon, Skip / "Add to calendar" actions. One visual
+  pattern for "the AI wants to do something external, confirm first,"
+  reused rather than invented twice.
 
 ### 5.5 Goals + Achievements (new in v1.1)
 

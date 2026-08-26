@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import { MagnifyingGlass } from '@phosphor-icons/react'
+import { BellSimple, CalendarPlus, MagnifyingGlass } from '@phosphor-icons/react'
 import { useAuth } from '../contexts/AuthContext'
+import { useProfile } from '../hooks/useProfile'
 import { supabase } from '../lib/supabase'
 import { callApi } from '../lib/api'
+import { pushSupported, subscribeToPush } from '../lib/push'
 import { PageShell } from '../components/layout/PageShell'
 import { TypewriterQuote } from '../components/ui/TypewriterQuote'
 import { ChatBubble } from '../components/ui/ChatBubble'
 import { DoveLoader } from '../components/ui/DoveLoader'
 import { SnapInput } from '../components/ui/SnapInput'
+
+const NOTIFY_PROMPT_DISMISSED_KEY = 'your-reflection-notify-prompt-dismissed'
 
 interface UIMessage {
   id: string
@@ -19,9 +23,19 @@ interface UIMessage {
 }
 
 interface ClassifyResult {
-  intent: 'on_topic' | 'off_topic' | 'search_needed'
+  intent: 'on_topic' | 'off_topic' | 'search_needed' | 'calendar_event'
   search_query?: string
   off_topic_reason?: string
+  event_title?: string
+  event_datetime?: string
+  event_duration?: number
+}
+
+function formatEventTime(iso: string): string {
+  const date = new Date(iso)
+  const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).toLowerCase()
+  return `${dateStr} at ${timeStr}`
 }
 
 const FALLBACK_QUOTES = [
@@ -38,10 +52,18 @@ function pickQuote() {
 
 export function Chat() {
   const { user } = useAuth()
+  const { profile } = useProfile()
   const [messages, setMessages] = useState<UIMessage[]>([])
+  const [showNotifyPrompt, setShowNotifyPrompt] = useState(false)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [pendingSearch, setPendingSearch] = useState<{ query: string; userText: string } | null>(null)
+  const [pendingEvent, setPendingEvent] = useState<{
+    title: string
+    datetime: string
+    duration?: number
+    userText: string
+  } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -60,6 +82,23 @@ export function Chat() {
   useEffect(() => {
     requestAnimationFrame(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }))
   }, [messages])
+
+  useEffect(() => {
+    if (!profile || profile.push_subscription || !pushSupported()) return
+    if (localStorage.getItem(NOTIFY_PROMPT_DISMISSED_KEY)) return
+    setShowNotifyPrompt(true)
+  }, [profile])
+
+  const dismissNotifyPrompt = () => {
+    localStorage.setItem(NOTIFY_PROMPT_DISMISSED_KEY, '1')
+    setShowNotifyPrompt(false)
+  }
+
+  const enableNotifications = async () => {
+    if (!user) return
+    await subscribeToPush(user.id)
+    dismissNotifyPrompt()
+  }
 
   const conversationForApi = (extraUser?: string) =>
     messages
@@ -146,6 +185,16 @@ export function Chat() {
       return
     }
 
+    if (classification.intent === 'calendar_event' && classification.event_title && classification.event_datetime) {
+      setPendingEvent({
+        title: classification.event_title,
+        datetime: classification.event_datetime,
+        duration: classification.event_duration,
+        userText: text,
+      })
+      return
+    }
+
     await streamChat(text)
   }
 
@@ -169,6 +218,39 @@ export function Chat() {
     await streamChat(userText)
   }
 
+  const confirmEvent = async () => {
+    if (!pendingEvent) return
+    const { title, datetime, duration, userText } = pendingEvent
+    setPendingEvent(null)
+    // Calendar confirm/write is a utility exchange, not a moment of
+    // conversation — kept ephemeral like the off-topic bounce, never sent
+    // to the model, never persisted to chat_history.
+    setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: 'user', content: userText, ephemeral: true }])
+    try {
+      const { confirmation } = await callApi<{ eventId: string; confirmation: string }>('/api/calendar-write', {
+        title,
+        datetime,
+        duration,
+      })
+      setMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: 'assistant', content: confirmation, ephemeral: true },
+      ])
+    } catch (err) {
+      const message = String(err).includes('not connected')
+        ? "I couldn't add that — Google Calendar isn't connected yet. You can connect it on your profile page."
+        : `I couldn't add that to your calendar: ${String(err)}`
+      setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: 'assistant', content: message, ephemeral: true }])
+    }
+  }
+
+  const skipEvent = async () => {
+    if (!pendingEvent) return
+    const { userText } = pendingEvent
+    setPendingEvent(null)
+    await streamChat(userText)
+  }
+
   const markFeltRight = async (messageId: string) => {
     if (!user) return
     setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, feltRight: true } : m)))
@@ -179,6 +261,26 @@ export function Chat() {
     <PageShell>
       <div className="mx-auto flex h-screen max-w-2xl flex-col">
         <TypewriterQuote quote={pickQuote()} />
+
+        {showNotifyPrompt && (
+          <div className="slide-up-fade-in mx-4 mt-2 flex items-center justify-between gap-2 rounded-card border border-hair border-[rgba(180,170,158,0.3)] bg-cream px-4 py-3">
+            <p className="flex items-center gap-1.5 text-xs text-charcoal">
+              <BellSimple size={13} /> Want a gentle nudge when you haven't checked in?
+            </p>
+            <div className="flex shrink-0 gap-2">
+              <button onClick={dismissNotifyPrompt} className="text-xs text-stone">
+                Not now
+              </button>
+              <button
+                onClick={enableNotifications}
+                className="rounded-pill px-3 py-1 text-xs font-medium text-white"
+                style={{ background: 'var(--gradient-user-bubble)' }}
+              >
+                Enable
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="flex-1 space-y-2 overflow-y-auto px-4 py-4">
           {messages
@@ -196,6 +298,30 @@ export function Chat() {
           {sending && messages[messages.length - 1]?.content === '' && <DoveLoader />}
           <div ref={scrollRef} />
         </div>
+
+        {pendingEvent && (
+          <div className="slide-up-fade-in mx-4 mb-2 flex flex-col gap-2 rounded-card border border-hair border-[rgba(180,170,158,0.3)] bg-cream px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="flex items-center gap-1.5 text-xs text-charcoal">
+              <CalendarPlus size={13} />
+              {pendingEvent.title} — {formatEventTime(pendingEvent.datetime)}
+            </p>
+            <div className="flex shrink-0 gap-2">
+              <button
+                onClick={skipEvent}
+                className="rounded-pill border border-hair border-[rgba(180,170,158,0.3)] px-3 py-1 text-xs text-stone"
+              >
+                Skip
+              </button>
+              <button
+                onClick={confirmEvent}
+                className="rounded-pill px-3 py-1 text-xs font-medium text-white"
+                style={{ background: 'var(--gradient-user-bubble)' }}
+              >
+                Add to calendar
+              </button>
+            </div>
+          </div>
+        )}
 
         {pendingSearch && (
           <div className="slide-up-fade-in mx-4 mb-2 flex flex-col gap-2 rounded-card border border-hair border-[rgba(180,170,158,0.3)] bg-cream px-4 py-3 sm:flex-row sm:items-center sm:justify-between">

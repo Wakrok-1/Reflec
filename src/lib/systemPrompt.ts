@@ -98,6 +98,8 @@ robotically. Just know it.
   {active_goals}
 </user_profile>
 
+{calendar}
+
 <patterns>
   <emotional_triggers>{emotional_triggers}</emotional_triggers>
   <coping>{coping_patterns}</coping>

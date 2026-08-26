@@ -1,0 +1,238 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node'
+import { createAdminClient } from '../_lib/supabaseAdmin'
+import { sendPush } from '../_lib/webpush'
+import { callGroq, GROQ_FALLBACK_MODEL } from '../_lib/groq'
+import type { Goal, NotificationPrefs, Profile, PushSubscriptionJson } from '../../src/lib/database.types'
+
+const QUIET_HOURS_DEFAULT_START = null
+const QUIET_HOURS_DEFAULT_END = null
+const OVERDUE_PACE_MULTIPLIER = 1.5
+const MIN_COMPLETED_INCREMENTS_FOR_PACE = 2
+
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
+// Quiet hours are compared against the server's UTC clock, not the
+// user's local time — there's no per-user timezone stored anywhere in
+// this schema yet, so "no notifications before 8am" is only accurate for
+// users close to UTC today. Documented limitation, not a silent bug.
+function inQuietHours(prefs: NotificationPrefs, now: Date): boolean {
+  const start = prefs.quiet_hours_start ?? QUIET_HOURS_DEFAULT_START
+  const end = prefs.quiet_hours_end ?? QUIET_HOURS_DEFAULT_END
+  if (!start || !end) return false
+
+  const [startH, startM] = start.split(':').map(Number)
+  const [endH, endM] = end.split(':').map(Number)
+  const nowMinutes = now.getUTCHours() * 60 + now.getUTCMinutes()
+  const startMinutes = startH * 60 + startM
+  const endMinutes = endH * 60 + endM
+
+  if (startMinutes === endMinutes) return false
+  if (startMinutes < endMinutes) {
+    return nowMinutes >= startMinutes && nowMinutes < endMinutes
+  }
+  // Wraps past midnight, e.g. 22:00 -> 08:00.
+  return nowMinutes >= startMinutes || nowMinutes < endMinutes
+}
+
+async function alreadySentToday(
+  admin: ReturnType<typeof createAdminClient>,
+  userId: string,
+  type: 'daily_checkin' | 'goal_reminder',
+  refId: string | null,
+): Promise<boolean> {
+  let query = admin
+    .from('notification_log')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('type', type)
+    .gte('sent_at', `${todayUtc()}T00:00:00Z`)
+  if (refId) query = query.eq('ref_id', refId)
+  const { data } = await query.limit(1)
+  return (data?.length ?? 0) > 0
+}
+
+async function personalize(apiKey: string, instruction: string): Promise<string> {
+  const raw = await callGroq(apiKey, {
+    model: GROQ_FALLBACK_MODEL,
+    maxTokens: 60,
+    temperature: 0.7,
+    messages: [
+      {
+        role: 'system',
+        content:
+          'You are Your Reflection, a personal AI companion. Write ONE short push-notification line — under 100 characters, warm, specific, never generic ("Time to journal!" is banned). No quotes, no emoji, no sign-off. Just the line.',
+      },
+      { role: 'user', content: instruction },
+    ],
+  })
+  return raw.trim().replace(/^"|"$/g, '')
+}
+
+async function checkInMessage(admin: ReturnType<typeof createAdminClient>, apiKey: string, userId: string) {
+  const [{ data: lastChat }, { data: lastJournal }, { data: lastSnap }] = await Promise.all([
+    admin
+      .from('chat_history')
+      .select('content, created_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    admin
+      .from('journal_entries')
+      .select('content, created_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    admin
+      .from('snaps')
+      .select('content, created_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ])
+
+  const candidates = [lastChat, lastJournal, lastSnap].filter(
+    (c): c is { content: string; created_at: string } => !!c,
+  )
+  if (candidates.length === 0) {
+    return 'Haven’t seen you today — how are you doing?'
+  }
+  candidates.sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+  const snippet = candidates[0].content.slice(0, 200)
+  return personalize(
+    apiKey,
+    `The user's most recent entry/message was: "${snippet}"\nWrite a check-in notification that gently references it (without quoting it verbatim) and asks how they're doing today.`,
+  )
+}
+
+function computeOverduePace(increments: Goal[]): { overdue: boolean; days: number } | null {
+  const completed = increments
+    .filter((i) => i.status === 'completed' && i.completed_at)
+    .sort((a, b) => new Date(a.completed_at!).getTime() - new Date(b.completed_at!).getTime())
+  if (completed.length < MIN_COMPLETED_INCREMENTS_FOR_PACE) return null
+
+  const gaps: number[] = []
+  for (let i = 1; i < completed.length; i++) {
+    gaps.push(new Date(completed[i].completed_at!).getTime() - new Date(completed[i - 1].completed_at!).getTime())
+  }
+  const avgGapMs = gaps.reduce((a, b) => a + b, 0) / gaps.length
+  const sinceLastMs = Date.now() - new Date(completed[completed.length - 1].completed_at!).getTime()
+  return { overdue: sinceLastMs > avgGapMs * OVERDUE_PACE_MULTIPLIER, days: Math.floor(sinceLastMs / 86_400_000) }
+}
+
+async function sendAndLog(
+  admin: ReturnType<typeof createAdminClient>,
+  userId: string,
+  subscription: PushSubscriptionJson,
+  type: 'daily_checkin' | 'goal_reminder',
+  refId: string | null,
+  title: string,
+  body: string,
+) {
+  const delivered = await sendPush(subscription, { title, body })
+  if (!delivered) {
+    await admin.from('profiles').update({ push_subscription: null }).eq('id', userId)
+    return
+  }
+  await admin.from('notification_log').insert({ user_id: userId, type, ref_id: refId })
+}
+
+// Vercel Cron target (see vercel.json), gated by CRON_SECRET rather than a
+// user session — there is no user session for an unattended daily sweep
+// across every account. Reads across all users via the admin client (the
+// one narrow exception documented in api/_lib/supabaseAdmin.ts), always
+// filtering explicitly by the user_id it's currently processing.
+//
+// "Suggestion ready" notifications are intentionally not sent here: the
+// weekly-suggestions feature they'd announce (PRD 5.6) isn't built yet,
+// so there's nothing to announce. The preference toggle exists in the UI
+// for when that ships.
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const cronSecret = process.env.CRON_SECRET
+  const authHeader = req.headers.authorization
+  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  const apiKey = process.env.GROQ_API_KEY
+  if (!apiKey) {
+    res.status(500).json({ error: 'GROQ_API_KEY is not configured on the server' })
+    return
+  }
+
+  try {
+    const admin = createAdminClient()
+    const now = new Date()
+    const today = todayUtc()
+
+    const { data: profiles } = await admin
+      .from('profiles')
+      .select('id, push_subscription, notification_prefs')
+      .not('push_subscription', 'is', null)
+
+    let checkInsSent = 0
+    let remindersSent = 0
+
+    for (const profile of (profiles ?? []) as Pick<Profile, 'id' | 'push_subscription' | 'notification_prefs'>[]) {
+      const subscription = profile.push_subscription
+      if (!subscription) continue
+      const prefs = profile.notification_prefs ?? {}
+      if (inQuietHours(prefs, now)) continue
+
+      if (prefs.daily_checkin !== false) {
+        const { data: activityToday } = await admin
+          .from('chat_history')
+          .select('id')
+          .eq('user_id', profile.id)
+          .gte('created_at', `${today}T00:00:00Z`)
+          .limit(1)
+        const hasActivity = (activityToday?.length ?? 0) > 0
+        if (!hasActivity && !(await alreadySentToday(admin, profile.id, 'daily_checkin', null))) {
+          const body = await checkInMessage(admin, apiKey, profile.id)
+          await sendAndLog(admin, profile.id, subscription, 'daily_checkin', null, 'Your Reflection', body)
+          checkInsSent += 1
+        }
+      }
+
+      if (prefs.goal_reminders !== false) {
+        const { data: goalRows } = await admin
+          .from('goals')
+          .select('*')
+          .eq('user_id', profile.id)
+          .in('type', ['big_goal', 'increment'])
+        const rows = (goalRows ?? []) as Goal[]
+        const incrementsByParent = new Map<string, Goal[]>()
+        for (const row of rows) {
+          if (row.type !== 'increment' || !row.parent_goal_id) continue
+          const list = incrementsByParent.get(row.parent_goal_id) ?? []
+          list.push(row)
+          incrementsByParent.set(row.parent_goal_id, list)
+        }
+
+        for (const goal of rows.filter((g) => g.type === 'big_goal' && g.status === 'active')) {
+          const increments = incrementsByParent.get(goal.id) ?? []
+          const pace = computeOverduePace(increments)
+          if (!pace?.overdue) continue
+          if (await alreadySentToday(admin, profile.id, 'goal_reminder', goal.id)) continue
+
+          const body = await personalize(
+            apiKey,
+            `The user has a goal called "${goal.title}" and hasn't checked off a step in about ${pace.days} days, which is longer than their own usual pace on this goal. Write a gentle reminder notification about it.`,
+          )
+          await sendAndLog(admin, profile.id, subscription, 'goal_reminder', goal.id, 'Your Reflection', body)
+          remindersSent += 1
+        }
+      }
+    }
+
+    res.status(200).json({ checkInsSent, remindersSent })
+  } catch (err) {
+    console.error('cron/daily-checkin failed', err)
+    res.status(500).json({ error: 'Unexpected server error', detail: String(err) })
+  }
+}

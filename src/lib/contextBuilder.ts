@@ -56,6 +56,12 @@ export interface ActiveGoalSummary {
   incrementsTotal: number
 }
 
+export interface UpcomingCalendarEvent {
+  title: string
+  date: string
+  time: string | null
+}
+
 export interface MemoryBundle {
   profile: Profile
   patterns: PatternExtraction | null
@@ -65,6 +71,12 @@ export interface MemoryBundle {
   vectorHits: VectorHit[]
   /** Active big_goal rows with their increment progress (PRD 5.5 / Sprint 4). */
   activeGoals: ActiveGoalSummary[]
+  /**
+   * Next 7 days of Google Calendar events (Sprint 5 / PRD 6.2).
+   * `undefined` when the user hasn't connected Google Calendar — the
+   * whole <calendar> block is then omitted entirely, no empty tag.
+   */
+  upcomingEvents: UpcomingCalendarEvent[] | undefined
 }
 
 // Reduces flat `goals` table rows (big_goal + increment, any status) down
@@ -107,6 +119,20 @@ function formatActiveGoals(goals: ActiveGoalSummary[] | undefined): string {
   return `<active_goals>\n${lines.join('\n')}\n</active_goals>`
 }
 
+// Unlike active_goals (always shown, even empty), calendar is fully
+// omitted — not even a self-closing tag — when Google Calendar isn't
+// connected: the model shouldn't be told "no events" when the truth is
+// "no calendar access at all."
+function formatCalendar(events: UpcomingCalendarEvent[] | undefined): string {
+  if (events === undefined) return ''
+  if (events.length === 0) return '<calendar>\n  <upcoming />\n</calendar>'
+  const lines = events.map(
+    (e) =>
+      `    <event title="${escapeXmlAttr(e.title)}" date="${e.date}"${e.time ? ` time="${escapeXmlAttr(e.time)}"` : ''} />`,
+  )
+  return `<calendar>\n  <upcoming>\n${lines.join('\n')}\n  </upcoming>\n</calendar>`
+}
+
 export interface BuiltContext {
   values: Record<string, string>
   tokensUsed: number
@@ -133,6 +159,7 @@ export function buildContextValues(bundle: MemoryBundle): BuiltContext {
     rolling_summary_last_7_days: 'no recent summary yet',
     vector_search_hits: 'nothing relevant surfaced yet',
     active_goals: formatActiveGoals(bundle.activeGoals),
+    calendar: formatCalendar(bundle.upcomingEvents),
   }
 
   // Hot tier (profile + patterns) is fixed and never trimmed, but still

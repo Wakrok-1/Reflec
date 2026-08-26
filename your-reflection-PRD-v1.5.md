@@ -34,10 +34,16 @@ Core product commitments, unchanged since Sprint 0:
   of truth for identity; every table carries `user_id` and is protected by
   row-level security so one account can never read or write another's
   data, even via the anon key.
-- **No service-role key, anywhere.** Every server-side call — Vercel
-  functions and Supabase Edge Functions alike — runs scoped to the
-  caller's own JWT. RLS is the actual security boundary, not an
-  application-level check layered on top of a privileged key.
+- **No service-role key in the user-facing request path.** Every server-side
+  call reachable from something a user does — chat, journal, goals, profile
+  edits, calendar read/write — runs scoped to the caller's own JWT. RLS is
+  the actual security boundary there, not an application-level check
+  layered on top of a privileged key. Sprint 5 introduces the one narrow
+  exception: two endpoints with no user session to scope to at all (an
+  OAuth redirect callback, and the daily cross-account notification cron)
+  use `SUPABASE_SERVICE_ROLE_KEY`, gated by their own mechanism (an opaque
+  single-use state token; a `CRON_SECRET` header) rather than a JWT. See
+  README "Security notes" for the exact two call sites.
 - **`/api/*` functions require a valid session.** They verify the caller's
   Supabase access token before doing anything, so they can never be used
   as an open proxy to Groq, Tavily, or the database.
@@ -110,19 +116,27 @@ for what the AI notices later, in ongoing chat and journaling.
 The main interface. Every message flows through:
 
 1. **Intent classification** — a cheap, fast pre-check (`gpt-oss-20b`)
-   tags the message `on_topic`, `off_topic`, or `search_needed` before it
-   reaches the main model. Off-topic messages get a warm, human redirect
-   and never reach the personality model at all — Your Reflection is not a
-   coding assistant, math tutor, or general knowledge engine
-   (GUARDRAIL 7).
+   tags the message `on_topic`, `off_topic`, `search_needed`, or (Sprint 5)
+   `calendar_event` before it reaches the main model. Off-topic messages
+   get a warm, human redirect and never reach the personality model at all
+   — Your Reflection is not a coding assistant, math tutor, or general
+   knowledge engine (GUARDRAIL 7).
 2. **Web search — confirm bubble.** If the classifier detects the message
    needs current information, the client shows a confirm/skip bubble; a
    Tavily search only runs on the user's explicit tap, never
    automatically.
-3. **Memory-injected, streamed reply.** The full memory bundle (7.2) is
+3. **Calendar write — confirm bubble (Sprint 5).** If the classifier
+   resolves a concrete date/time from the message, the client shows the
+   same shape of confirm/skip bubble; `/api/calendar-write` only runs on
+   the user's explicit tap (GUARDRAIL 4 — never silent), and the AI
+   confirms in chat: "Added to your calendar — [title] on [date] at
+   [time]." This exchange is ephemeral (never sent to the model, never
+   persisted to `chat_history`) — it's a utility action, not a moment of
+   conversation.
+4. **Memory-injected, streamed reply.** The full memory bundle (7.2) is
    rendered into the system prompt and streamed token-by-token from Groq
    back to the client.
-4. **"Felt right" signal.** The user can mark any assistant reply as
+5. **"Felt right" signal.** The user can mark any assistant reply as
    having landed — a lightweight positive signal stored for future pattern
    analysis, with no negative equivalent (silence is the negative signal).
 
@@ -193,15 +207,57 @@ the design spec); not yet wired into the Character Profile page.
 
 ## 6. Integrations
 
+- **6.2 Google Calendar (Sprint 5)** — built. OAuth (`calendar.events`
+  scope, read + write) via `api/google-auth-start.ts` /
+  `api/google-callback.ts`; tokens stored per-user in
+  `google_calendar_connections`, refreshed automatically on expiry
+  (`api/_lib/googleCalendar.ts`). Reads (`api/calendar-read.ts`) power the
+  `<calendar>` context block (7.2); writes (`api/calendar-write.ts`) are
+  chat-triggered and always confirmed first (GUARDRAIL 4, 5.3). A written
+  event also gets a local mirror row in `calendar_events` (`source:
+  'chat'`) for the app's own record.
 - **6.4 Apple Journal screenshot import** — built. A screenshot upload is
   read by the Groq vision model, OCR'd into editable text the user reviews
   before saving, rather than trusting a blind auto-import.
-- **Google Calendar** and **Strava** — *Planned*. Schema tables
-  (`calendar_events`, `strava_data`) exist from Sprint 0; no integration
-  is wired up yet. The system prompt already carries the guardrail for
-  when this ships: never write to Google Calendar without the user's
-  explicit confirmation first — detect the intent, confirm, then write
-  (GUARDRAIL 4).
+- **6.1 Strava** — *Explicitly out of scope for Sprint 5.* No OAuth flow,
+  sync job, or context injection exists — `strava_data` remains the
+  untouched Sprint 0 foundation table. Revisit in a later sprint if
+  reintroduced.
+
+## 6a. Web Push Notifications (Sprint 5)
+
+- **Setup:** VAPID key pair (`VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` server-
+  side, `VITE_VAPID_PUBLIC_KEY` — same public value — client-side); a
+  service worker (`public/sw.js`) handles `push` and `notificationclick`;
+  a subscription (`PushSubscription.toJSON()`) is stored on
+  `profiles.push_subscription`. The user is prompted once (dismissible,
+  tracked client-side, not a DB column) the first time they land on
+  `/chat` without an existing subscription.
+- **Notification types:**
+  - **Daily check-in** — if the user hasn't had any chat/journal/snap
+    activity yet today, a Groq-personalized line referencing their most
+    recent entry ("You mentioned feeling anxious about the deadline
+    yesterday — how's that going?"), never a generic "Time to journal!"
+  - **Goal reminder** — a big goal is flagged overdue when the time since
+    its last completed increment exceeds 1.5× that goal's own average
+    pace between completions (needs at least 2 completed increments to
+    establish a pace — there's no fixed due-date concept here, it's
+    entirely relative to how the user has actually been moving).
+  - **Suggestion ready** — the preference toggle and delivery plumbing
+    exist, but nothing generates weekly suggestions yet (5.6 is still
+    Planned), so this type has no automatic trigger today.
+- **Delivery:** `api/cron/daily-checkin.ts`, a Vercel Cron job
+  (`vercel.json`, daily at 09:00 UTC) gated by `CRON_SECRET`, sweeps every
+  account with a stored subscription, checks per-user preferences and
+  quiet hours, and sends via `api/_lib/webpush.ts`. `notification_log`
+  dedupes so a goal or a day is never double-notified.
+- **Known limitation:** quiet hours (`profiles.notification_prefs.quiet_hours_start/end`)
+  are compared against the cron's UTC clock — there's no per-user timezone
+  stored anywhere yet, so they're only precisely accurate for users near
+  UTC. Documented rather than silently wrong.
+- **User control:** the Notifications section on `/profile` (5.2) — toggle
+  per type, quiet-hours start/end — writes directly to
+  `profiles.notification_prefs`.
 
 ## 7. AI / Memory Architecture
 
@@ -267,7 +323,17 @@ pass regenerates it. The AI never writes any of this data unprompted
 - `suggestions` — the *Planned* periodic-recommendation feature (5.6),
   distinct from `dismissed_suggestions` (the suggestion-bubble mechanism's
   do-not-resurface ledger, 7.3).
-- `calendar_events`, `strava_data` — *Planned* integrations (6).
+- `calendar_events` — individual Google Calendar events, written either by
+  chat (`source: 'chat'`) or (unbuilt) a future sync job. `strava_data`
+  remains an untouched, unused Sprint 0 foundation table (6).
+- `google_calendar_connections` — one row per user holding OAuth tokens
+  (6.2), deliberately separate from `calendar_events` (one row per
+  *event*) so refresh-on-expiry is a single-row update, not a rewrite
+  across every event a user has.
+- `oauth_states` — short-lived, single-use tokens bridging an OAuth
+  redirect (which carries no session) back to the user who started it.
+- `notification_log` — dedup ledger so the daily cron never double-sends
+  a check-in or a specific goal's reminder on the same day (6a).
 - `chat_history`, `memory_summaries`, `taste_profile`,
   `pattern_extractions`, `response_signals` — chat memory substrate (7.2).
 - `memories` — typed memory entities, new in v1.5 (7.2).
@@ -288,4 +354,5 @@ Every table above carries row-level security scoped to `auth.uid()`.
 | 2 | Chat Core + memory engine (context injection, vector search, patterns) | ✅ Built |
 | 3 | Full Journal + PDF Export Builder | ✅ Built |
 | 4 | Goals (Big Life Goals, Increments, Bucket List) + Achievements | ✅ Built |
-| — | Suggestions page (5.6), Category pills (5.7), Google Calendar / Strava (6) | ⏳ Planned |
+| 5 | Google Calendar (6.2) + Web Push Notifications (6a) | ✅ Built |
+| — | Suggestions page (5.6), Category pills (5.7), Strava (6.1) | ⏳ Planned |

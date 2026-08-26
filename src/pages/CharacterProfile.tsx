@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useProfile } from '../hooks/useProfile'
 import { supabase } from '../lib/supabase'
+import { ConnectedApps } from '../components/ConnectedApps'
 import { MemoryControls } from '../components/MemoryControls'
 import { SuggestionBubble } from '../components/SuggestionBubble'
 import { dismissSuggestion, fetchDismissedFingerprints, isDismissed } from '../lib/suggestions'
@@ -241,6 +242,8 @@ export function CharacterProfile() {
           onChange={(v) => saveField(user!.id, 'core_values', v, refresh)}
         />
       </section>
+
+      <ConnectedApps />
 
       <section className="mt-6 rounded-xl border border-reflection-200 bg-white p-6">
         <h2 className="text-sm font-medium text-reflection-900">Taste Profile</h2>

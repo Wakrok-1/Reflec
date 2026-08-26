@@ -3,6 +3,26 @@
 // regenerate with:
 //   npx supabase gen types typescript --project-id <ref> > src/lib/database.types.ts
 
+// Widened in Sprint 5 (0006_sprint5_integrations.sql) from the Sprint 0
+// shape ({ enabled, frequency }), which nothing had consumed yet. Every
+// reader treats a missing key as "off"/unset rather than throwing, so a
+// profile row still carrying the old shape (never re-saved since) is
+// handled the same as one with every key present.
+export type NotificationPrefs = {
+  enabled?: boolean
+  frequency?: 'daily' | 'weekly' | 'off'
+  daily_checkin?: boolean
+  goal_reminders?: boolean
+  suggestions?: boolean
+  quiet_hours_start?: string | null
+  quiet_hours_end?: string | null
+}
+
+export type PushSubscriptionJson = {
+  endpoint: string
+  keys: { p256dh: string; auth: string }
+}
+
 export type Profile = {
   id: string
   name: string | null
@@ -15,7 +35,8 @@ export type Profile = {
   summary_memory: string
   onboarding_completed_at: string | null
   personality_emergence_unlocked: boolean
-  notification_prefs: { enabled: boolean; frequency: 'daily' | 'weekly' | 'off' }
+  notification_prefs: NotificationPrefs
+  push_subscription: PushSubscriptionJson | null
   created_at: string
   updated_at: string
 }
@@ -201,6 +222,34 @@ export type MemorySummary = {
   created_at: string
 }
 
+export type GoogleCalendarConnection = {
+  user_id: string
+  access_token: string
+  refresh_token: string
+  token_expires_at: string
+  scope: string | null
+  calendar_id: string
+  connected_at: string
+  updated_at: string
+}
+
+export type OAuthState = {
+  state: string
+  user_id: string
+  provider: 'google'
+  created_at: string
+}
+
+export type NotificationType = 'daily_checkin' | 'goal_reminder' | 'suggestion_ready'
+
+export type NotificationLogEntry = {
+  id: string
+  user_id: string
+  type: NotificationType
+  ref_id: string | null
+  sent_at: string
+}
+
 // supabase-js's generic client requires each table to carry a
 // `Relationships` array and the schema to declare `Views`/`Functions`
 // (see @supabase/postgrest-js's GenericTable/GenericSchema) — otherwise
@@ -259,6 +308,20 @@ export type Database = {
       private_entries: Table<
         PrivateEntry,
         Partial<PrivateEntry> & { user_id: string; entry_id: string; entry_type: PrivateEntryType }
+      >
+      google_calendar_connections: Table<
+        GoogleCalendarConnection,
+        Partial<GoogleCalendarConnection> & {
+          user_id: string
+          access_token: string
+          refresh_token: string
+          token_expires_at: string
+        }
+      >
+      oauth_states: Table<OAuthState, Partial<OAuthState> & { state: string; user_id: string; provider: 'google' }>
+      notification_log: Table<
+        NotificationLogEntry,
+        Partial<NotificationLogEntry> & { user_id: string; type: NotificationType }
       >
     }
     Views: Record<string, never>

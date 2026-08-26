@@ -2,7 +2,14 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { verifyUser } from './_lib/verifyUser'
 import { createUserScopedClient } from './_lib/supabaseServer'
 import { GROQ_PRIMARY_MODEL, parseGroqStreamLine, streamGroq, type GroqMessage } from './_lib/groq'
-import { buildActiveGoalsSummary, renderSystemPrompt, type MemoryBundle, type VectorHit } from '../src/lib/contextBuilder'
+import { getValidAccessToken, listUpcomingEvents } from './_lib/googleCalendar'
+import {
+  buildActiveGoalsSummary,
+  renderSystemPrompt,
+  type MemoryBundle,
+  type UpcomingCalendarEvent,
+  type VectorHit,
+} from '../src/lib/contextBuilder'
 import type { PatternExtraction, Profile } from '../src/lib/database.types'
 
 interface ChatRequestBody {
@@ -138,6 +145,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       embedding,
     })
 
+    // Fully optional and never allowed to break chat: an expired/revoked
+    // Google token, a Calendar API hiccup, or simply never having
+    // connected all resolve to "omit the <calendar> block" (7.2 / 6.2).
+    stage = 'fetch_calendar'
+    let upcomingEvents: UpcomingCalendarEvent[] | undefined
+    try {
+      const connection = await getValidAccessToken(supabase, user.id)
+      if (connection) {
+        upcomingEvents = await listUpcomingEvents(connection.accessToken, connection.calendarId)
+      }
+    } catch (err) {
+      console.error('chat: calendar fetch failed, continuing without it', err)
+    }
+
     stage = 'build_system_prompt'
     const bundle: MemoryBundle = {
       profile: profile as Profile,
@@ -145,6 +166,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       summaries: summaries ?? [],
       vectorHits,
       activeGoals: buildActiveGoalsSummary(goalRows ?? []),
+      upcomingEvents,
     }
 
     const { prompt: systemPrompt } = renderSystemPrompt(bundle)

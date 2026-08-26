@@ -65,6 +65,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       summaries: summaries ?? [],
       vectorHits: [],
       activeGoals: [],
+      upcomingEvents: undefined,
     }
     const { prompt: systemPrompt } = renderSystemPrompt(bundle)
 
