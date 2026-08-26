@@ -13,14 +13,16 @@
 create extension if not exists "vector";
 
 -- pg_cron can only be enabled by a project owner from the Supabase
--- dashboard (Database -> Extensions) on some project tiers; attempt it
--- here so the migration is a no-op if it's already on, but don't fail the
--- whole migration if the role running it lacks privilege to create it.
+-- dashboard (Database -> Extensions) on some project tiers, and isn't
+-- installed at all on a plain local Postgres. Attempt it so the migration
+-- is a no-op if it's already on, but never fail the whole migration over
+-- it — catch broadly (missing extension file, insufficient privilege,
+-- anything else) since the rest of this migration doesn't depend on it.
 do $$
 begin
   create extension if not exists pg_cron with schema pg_catalog;
-exception when insufficient_privilege then
-  raise notice 'pg_cron could not be created automatically — enable it from the Supabase dashboard under Database > Extensions.';
+exception when others then
+  raise notice 'pg_cron could not be created automatically (%) — enable it from the Supabase dashboard under Database > Extensions.', sqlerrm;
 end
 $$;
 

@@ -94,6 +94,38 @@ export type ResponseSignal = {
   created_at: string
 }
 
+export type MemoryType =
+  | 'EVENT'
+  | 'BELIEF'
+  | 'GOAL'
+  | 'PREFERENCE'
+  | 'EMOTION'
+  | 'HABIT'
+  | 'ACHIEVEMENT'
+  | 'PROBLEM'
+
+export type Memory = {
+  id: string
+  user_id: string
+  type: MemoryType
+  content: string
+  confidence: number
+  created_at: string
+  last_seen_at: string
+  related_entries: string[]
+  embedding: number[] | null
+}
+
+export type PrivateEntryType = 'journal' | 'snap'
+
+export type PrivateEntry = {
+  id: string
+  user_id: string
+  entry_id: string
+  entry_type: PrivateEntryType
+  created_at: string
+}
+
 export type Goal = {
   id: string
   user_id: string
@@ -222,6 +254,11 @@ export type Database = {
         }
       >
       response_signals: Table<ResponseSignal, Partial<ResponseSignal> & { user_id: string }>
+      memories: Table<Memory, Partial<Memory> & { user_id: string; type: MemoryType; content: string }>
+      private_entries: Table<
+        PrivateEntry,
+        Partial<PrivateEntry> & { user_id: string; entry_id: string; entry_type: PrivateEntryType }
+      >
     }
     Views: Record<string, never>
     Functions: Record<string, never>

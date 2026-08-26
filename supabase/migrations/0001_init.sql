@@ -90,7 +90,7 @@ create table public.snaps (
   mood_tags jsonb not null default '[]'::jsonb,
   energy_level smallint check (energy_level between 1 and 5),
   themes jsonb not null default '[]'::jsonb,
-  linked_goal_id uuid references public.goals (id) on delete set null,
+  linked_goal_id uuid,
   created_at timestamptz not null default now()
 );
 
