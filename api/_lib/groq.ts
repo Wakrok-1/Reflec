@@ -106,6 +106,46 @@ export async function streamGroq(apiKey: string, options: CallGroqOptions): Prom
   return response
 }
 
+// Vision call for Apple Journal screenshot extraction (PRD 6.4). Separate
+// from callGroq because multimodal content is a different shape (an array
+// of text/image_url parts) than the plain-string messages used everywhere
+// else, and this is the only place in the app that needs it.
+export async function callGroqVision(apiKey: string, imageDataUrl: string, prompt: string): Promise<string> {
+  const response = await fetch(GROQ_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: GROQ_VISION_MODEL,
+      max_tokens: 1000,
+      temperature: 0.2,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: imageDataUrl } },
+          ],
+        },
+      ],
+    }),
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new GroqError(response.status, detail)
+  }
+
+  const data = await response.json()
+  const text: string | undefined = data?.choices?.[0]?.message?.content
+  if (typeof text !== 'string') {
+    throw new GroqError(502, 'Groq vision response had no message content')
+  }
+  return text
+}
+
 // Parses one line of a Groq/OpenAI-style SSE stream ("data: {...}" or
 // "data: [DONE]") and extracts the text delta, if any.
 export function parseGroqStreamLine(line: string): string | null {

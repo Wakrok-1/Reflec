@@ -22,6 +22,11 @@
   --gradient-goal-progress: linear-gradient(90deg, #818cf8, #c084fc);
   --gradient-dove-card: linear-gradient(135deg, #e8ddd2 0%, #d4c8b8 60%, #c8bab0 100%);
   --gradient-medal: linear-gradient(135deg, #f0c060, #d4922a, #f0c060);
+  /* Not in design spec v1.0/1.1 — added for the Journal mode toggle's
+     active state (Sprint 3). Warm/muted, not the cool Apple gradient:
+     switching modes is a mundane UI action, not a moment of action or
+     achievement, so it stays out of the gradient-is-the-door language. */
+  --gradient-stone: linear-gradient(135deg, #8a7a6a, #6b5e52);
 
   --radius-card: 20px;
   --radius-card-lg: 24px;

@@ -24,6 +24,7 @@ export type JournalEntry = {
   id: string
   user_id: string
   mode: 'full' | 'snap'
+  title: string | null
   content: string
   ai_reflection: string | null
   mood_tags: unknown[]

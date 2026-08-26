@@ -5,8 +5,8 @@ own words, journal entries, and activity data. See the full product spec in
 the PRD shared with this repo (v1.5).
 
 **Status:** Sprint 0 (Foundation), Sprint 1 (Onboarding + Character Profile),
-and Sprint 2 (Chat Core) are built. Journaling, goals, charts, and
-integrations land in later sprints.
+Sprint 2 (Chat Core), and Sprint 3 (Full Journal + PDF Export) are built.
+Goals, charts, and integrations land in later sprints.
 
 ## Stack
 
@@ -31,7 +31,8 @@ integrations land in later sprints.
      if they aren't already on.
    - In the SQL editor, run the migrations in order:
      `0001_init.sql` → `0002_v1_3_memory_upgrade.sql` →
-     `0003_typed_memories.sql` → `0004_vector_search_functions.sql`.
+     `0003_typed_memories.sql` → `0004_vector_search_functions.sql` →
+     `0005_journal_title.sql`.
      Together these create every table (`profiles`, `journal_entries`,
      `snaps`, `goals`, `suggestions`, `calendar_events`, `strava_data`,
      `chat_history`, `memory_summaries`, `taste_profile`,
@@ -115,8 +116,9 @@ src/
   lib/classGradient.ts       Deterministic class badge gradient (design spec §8)
   types/onboarding.ts        Shape of the onboarding extraction JSON
   types/suggestions.ts       Suggestion bubble discriminated union
+  lib/exportBlocks.ts        PDF export builder's Block/CanvasConfig data model
   pages/                     Login, Signup, AuthCallback, Home, Onboarding,
-                             CharacterProfile, Chat, Journal (stub), Goals (stub)
+                             CharacterProfile, Chat, Journal, JournalExport, Goals (stub)
   components/
     ProtectedRoute.tsx
     SuggestionBubble.tsx      Accept/Dismiss approval bubble (PRD 5.2, 7.3)
@@ -124,16 +126,26 @@ src/
     ui/                       DoveLoader, IslandNav, ChatBubble, TypewriterQuote,
                               SnapInput, ClassBadge/GoalCard/MedalBadge/CategoryPill (stubs)
     layout/PageShell.tsx      Linen background + island nav wrapper
+    export/
+      BlockEditorStep.tsx      Step 2: dnd-kit reorder, inline edit, block library sidebar
+      ExportStep.tsx           Step 3: live PDFViewer preview + Download PDF
+      pdf/pdfFonts.ts          Registers bundled Poppins WOFF2 with react-pdf
+      pdf/ExportDocument.tsx   Minimal + Editorial style renderers, single-day + timeline layouts
 api/
   chat.ts                     Streaming chat: memory injection, vector search, Groq
   classify-intent.ts          gpt-oss-20b pre-check: on_topic / off_topic / search_needed
   search.ts                   Tavily search, only called on explicit user confirmation
+  journal-reflect.ts          Optional AI reflection on a full journal entry
+  journal-prompt.ts           AI-generated journal prompt for the export builder's prompt block
+  turn-into-journal.ts        Restructures a day's snaps into one entry — their words only
+  distill-to-snap.ts          Pulls a full entry's one-line essence
+  vision-extract.ts           Apple Journal screenshot OCR via qwen/qwen3.6-27b vision
   onboarding-chat.ts          One turn of the AI interview (Groq)
   onboarding-finalize.ts      Extracts profile/taste suggestions (Groq, JSON mode)
   groq-test.ts                Server-side Groq connectivity check
   _lib/verifyUser.ts          Verifies the caller's Supabase session
   _lib/supabaseServer.ts      RLS-scoped Supabase client (no service-role key, ever)
-  _lib/groq.ts                Groq chat wrapper — primary/fallback/classifier models, streaming
+  _lib/groq.ts                Groq chat wrapper — primary/fallback/classifier/vision, streaming
   _lib/systemPrompt.ts        Onboarding-only IDENTITY/RULES/BEHAVIOUR blocks (Sprint 1)
 supabase/
   migrations/0001_init.sql                    Core schema + RLS policies
@@ -142,9 +154,11 @@ supabase/
                                                response_signals, embedding columns + HNSW
   migrations/0003_typed_memories.sql          memories, private_entries
   migrations/0004_vector_search_functions.sql match_journal_entries, match_chat_history RPCs
+  migrations/0005_journal_title.sql           journal_entries.title
   functions/embed-text/index.ts               gte-small embedding for arbitrary text
   functions/embed-entry/index.ts              Embeds + stores on a specific row's embedding column
   functions/extract-patterns/index.ts         Updates pattern_extractions + typed memories (Groq)
+public/fonts/poppins-*.woff2                  Bundled Poppins (SIL OFL) for react-pdf generation
 ```
 
 ## Security notes
