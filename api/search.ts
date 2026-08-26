@@ -27,7 +27,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return
   }
 
-  const user = await verifyUser(req.headers.authorization)
+  let user
+  try {
+    user = await verifyUser(req.headers.authorization)
+  } catch (err) {
+    console.error('search auth check failed', err)
+    res.status(500).json({ error: 'Unexpected server error', detail: String(err) })
+    return
+  }
   if (!user) {
     res.status(401).json({ error: 'Unauthorized' })
     return

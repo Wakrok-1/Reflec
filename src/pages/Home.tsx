@@ -20,8 +20,14 @@ export function Home() {
         method: 'POST',
         headers: { authorization: `Bearer ${token}` },
       })
-      const data = await response.json()
-      setResult(response.ok ? data.message : `Error: ${data.error}`)
+      const raw = await response.text()
+      let data: { message?: string; error?: string }
+      try {
+        data = raw ? JSON.parse(raw) : {}
+      } catch {
+        throw new Error(`Non-JSON response (${response.status}): ${raw.slice(0, 200) || 'empty response'}`)
+      }
+      setResult(response.ok ? (data.message ?? 'OK') : `Error: ${data.error}`)
     } catch (err) {
       setResult(`Error: ${String(err)}`)
     } finally {

@@ -25,40 +25,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return
   }
 
-  const accessToken = req.headers.authorization?.replace(/^Bearer\s+/i, '')
-  const user = await verifyUser(req.headers.authorization)
-  if (!user || !accessToken) {
-    res.status(401).json({ error: 'Unauthorized' })
-    return
-  }
-
-  const apiKey = process.env.GROQ_API_KEY
-  if (!apiKey) {
-    res.status(500).json({ error: 'GROQ_API_KEY is not configured on the server' })
-    return
-  }
-
-  const body = req.body as TurnIntoJournalBody
-  if (!Array.isArray(body.snapIds) || body.snapIds.length === 0) {
-    res.status(400).json({ error: '"snapIds" must be a non-empty array' })
-    return
-  }
-
-  const supabase = createUserScopedClient(accessToken)
-
-  const { data: snaps, error: snapsError } = await supabase
-    .from('snaps')
-    .select('id, content, created_at')
-    .eq('user_id', user.id)
-    .in('id', body.snapIds)
-    .order('created_at', { ascending: true })
-
-  if (snapsError || !snaps || snaps.length === 0) {
-    res.status(404).json({ error: 'No matching snaps found' })
-    return
-  }
-
   try {
+    const accessToken = req.headers.authorization?.replace(/^Bearer\s+/i, '')
+    const user = await verifyUser(req.headers.authorization)
+    if (!user || !accessToken) {
+      res.status(401).json({ error: 'Unauthorized' })
+      return
+    }
+
+    const apiKey = process.env.GROQ_API_KEY
+    if (!apiKey) {
+      res.status(500).json({ error: 'GROQ_API_KEY is not configured on the server' })
+      return
+    }
+
+    const body = req.body as TurnIntoJournalBody
+    if (!Array.isArray(body.snapIds) || body.snapIds.length === 0) {
+      res.status(400).json({ error: '"snapIds" must be a non-empty array' })
+      return
+    }
+
+    const supabase = createUserScopedClient(accessToken)
+
+    const { data: snaps, error: snapsError } = await supabase
+      .from('snaps')
+      .select('id, content, created_at')
+      .eq('user_id', user.id)
+      .in('id', body.snapIds)
+      .order('created_at', { ascending: true })
+
+    if (snapsError || !snaps || snaps.length === 0) {
+      res.status(404).json({ error: 'No matching snaps found' })
+      return
+    }
+
     const combined = snaps.map((s) => `- ${s.content}`).join('\n')
     const entryText = await callGroq(apiKey, {
       model: GROQ_PRIMARY_MODEL,
@@ -96,6 +96,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     res.status(200).json({ entry })
   } catch (err) {
-    res.status(500).json({ error: 'Unexpected error calling Groq API', detail: String(err) })
+    // Anything unexpected (a bad env var causing verifyUser's or
+    // createUserScopedClient's Supabase client to throw, a network
+    // hiccup, etc.) must still come back as JSON — an uncaught throw here
+    // becomes Vercel's own plain-text crash page, which breaks every
+    // client-side `response.json()` call.
+    console.error('turn-into-journal failed', err)
+    res.status(500).json({ error: 'Unexpected server error', detail: String(err) })
   }
 }

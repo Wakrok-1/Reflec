@@ -17,25 +17,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return
   }
 
-  const user = await verifyUser(req.headers.authorization)
-  if (!user) {
-    res.status(401).json({ error: 'Unauthorized' })
-    return
-  }
-
-  const apiKey = process.env.GROQ_API_KEY
-  if (!apiKey) {
-    res.status(500).json({ error: 'GROQ_API_KEY is not configured on the server' })
-    return
-  }
-
-  const body = req.body as OnboardingChatBody
-  if (!Array.isArray(body.messages) || body.messages.length === 0) {
-    res.status(400).json({ error: '"messages" must be a non-empty array' })
-    return
-  }
-
   try {
+    const user = await verifyUser(req.headers.authorization)
+    if (!user) {
+      res.status(401).json({ error: 'Unauthorized' })
+      return
+    }
+
+    const apiKey = process.env.GROQ_API_KEY
+    if (!apiKey) {
+      res.status(500).json({ error: 'GROQ_API_KEY is not configured on the server' })
+      return
+    }
+
+    const body = req.body as OnboardingChatBody
+    if (!Array.isArray(body.messages) || body.messages.length === 0) {
+      res.status(400).json({ error: '"messages" must be a non-empty array' })
+      return
+    }
+
     const reply = await callGroq(apiKey, {
       maxTokens: 400,
       temperature: 0.8,
@@ -43,6 +43,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })
     res.status(200).json({ reply })
   } catch (err) {
-    res.status(500).json({ error: 'Unexpected error calling Groq API', detail: String(err) })
+    // Anything unexpected (a bad env var causing verifyUser's Supabase
+    // client to throw, a network hiccup, etc.) must still come back as
+    // JSON — an uncaught throw here becomes Vercel's own plain-text crash
+    // page, which breaks every client-side `response.json()` call.
+    console.error('onboarding-chat failed', err)
+    res.status(500).json({ error: 'Unexpected server error', detail: String(err) })
   }
 }

@@ -11,9 +11,22 @@ export async function callApi<T>(path: string, body: unknown): Promise<T> {
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
   })
-  const data = await response.json()
+  // Read as text first — a platform-level failure (a crashed function, a
+  // timeout, a proxy error page) can return plain text/HTML instead of
+  // JSON, and calling response.json() directly on that throws an opaque
+  // SyntaxError instead of a message that explains what actually happened.
+  const raw = await response.text()
+  let data: unknown
+  try {
+    data = raw ? JSON.parse(raw) : null
+  } catch {
+    throw new Error(
+      `Request to ${path} failed (${response.status}): ${raw.slice(0, 200) || 'empty response'}`,
+    )
+  }
   if (!response.ok) {
-    throw new Error(data?.error ?? `Request to ${path} failed`)
+    const message = (data as { error?: string } | null)?.error ?? `Request to ${path} failed`
+    throw new Error(message)
   }
   return data as T
 }

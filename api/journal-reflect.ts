@@ -21,52 +21,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return
   }
 
-  const accessToken = req.headers.authorization?.replace(/^Bearer\s+/i, '')
-  const user = await verifyUser(req.headers.authorization)
-  if (!user || !accessToken) {
-    res.status(401).json({ error: 'Unauthorized' })
-    return
-  }
-
-  const apiKey = process.env.GROQ_API_KEY
-  if (!apiKey) {
-    res.status(500).json({ error: 'GROQ_API_KEY is not configured on the server' })
-    return
-  }
-
-  const body = req.body as ReflectRequestBody
-  if (typeof body.entryId !== 'string' || typeof body.content !== 'string' || !body.content.trim()) {
-    res.status(400).json({ error: '"entryId" and "content" are required' })
-    return
-  }
-
-  const supabase = createUserScopedClient(accessToken)
-
-  const [{ data: profile, error: profileError }, { data: patterns }, { data: summaries }] = await Promise.all([
-    supabase.from('profiles').select('*').eq('id', user.id).single(),
-    supabase.from('pattern_extractions').select('*').eq('user_id', user.id).maybeSingle(),
-    supabase
-      .from('memory_summaries')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('period_end', { ascending: false })
-      .limit(20),
-  ])
-
-  if (profileError || !profile) {
-    res.status(500).json({ error: 'Could not load user profile' })
-    return
-  }
-
-  const bundle: MemoryBundle = {
-    profile: profile as Profile,
-    patterns: (patterns as PatternExtraction) ?? null,
-    summaries: summaries ?? [],
-    vectorHits: [],
-  }
-  const { prompt: systemPrompt } = renderSystemPrompt(bundle)
-
   try {
+    const accessToken = req.headers.authorization?.replace(/^Bearer\s+/i, '')
+    const user = await verifyUser(req.headers.authorization)
+    if (!user || !accessToken) {
+      res.status(401).json({ error: 'Unauthorized' })
+      return
+    }
+
+    const apiKey = process.env.GROQ_API_KEY
+    if (!apiKey) {
+      res.status(500).json({ error: 'GROQ_API_KEY is not configured on the server' })
+      return
+    }
+
+    const body = req.body as ReflectRequestBody
+    if (typeof body.entryId !== 'string' || typeof body.content !== 'string' || !body.content.trim()) {
+      res.status(400).json({ error: '"entryId" and "content" are required' })
+      return
+    }
+
+    const supabase = createUserScopedClient(accessToken)
+
+    const [{ data: profile, error: profileError }, { data: patterns }, { data: summaries }] = await Promise.all([
+      supabase.from('profiles').select('*').eq('id', user.id).single(),
+      supabase.from('pattern_extractions').select('*').eq('user_id', user.id).maybeSingle(),
+      supabase
+        .from('memory_summaries')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('period_end', { ascending: false })
+        .limit(20),
+    ])
+
+    if (profileError || !profile) {
+      res.status(500).json({ error: 'Could not load user profile' })
+      return
+    }
+
+    const bundle: MemoryBundle = {
+      profile: profile as Profile,
+      patterns: (patterns as PatternExtraction) ?? null,
+      summaries: summaries ?? [],
+      vectorHits: [],
+    }
+    const { prompt: systemPrompt } = renderSystemPrompt(bundle)
+
     const reply = await callGroq(apiKey, {
       model: GROQ_PRIMARY_MODEL,
       maxTokens: 250,
@@ -90,6 +90,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     res.status(200).json({ reflection })
   } catch (err) {
-    res.status(500).json({ error: 'Unexpected error calling Groq API', detail: String(err) })
+    // Anything unexpected (a bad env var causing verifyUser's or
+    // createUserScopedClient's Supabase client to throw, a network
+    // hiccup, etc.) must still come back as JSON — an uncaught throw here
+    // becomes Vercel's own plain-text crash page, which breaks every
+    // client-side `response.json()` call.
+    console.error('journal-reflect failed', err)
+    res.status(500).json({ error: 'Unexpected server error', detail: String(err) })
   }
 }

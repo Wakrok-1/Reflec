@@ -67,7 +67,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return
   }
 
-  const user = await verifyUser(req.headers.authorization)
+  let user
+  try {
+    user = await verifyUser(req.headers.authorization)
+  } catch (err) {
+    // A throw here means the auth check itself is broken (e.g. a bad
+    // Supabase env var), not that the request is unauthenticated — that
+    // must come back as JSON, never fail open, and never let an uncaught
+    // throw hit Vercel's plain-text crash page.
+    console.error('classify-intent auth check failed', err)
+    res.status(500).json({ error: 'Unexpected server error', detail: String(err) })
+    return
+  }
   if (!user) {
     res.status(401).json({ error: 'Unauthorized' })
     return

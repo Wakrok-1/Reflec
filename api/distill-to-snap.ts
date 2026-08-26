@@ -20,40 +20,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return
   }
 
-  const accessToken = req.headers.authorization?.replace(/^Bearer\s+/i, '')
-  const user = await verifyUser(req.headers.authorization)
-  if (!user || !accessToken) {
-    res.status(401).json({ error: 'Unauthorized' })
-    return
-  }
-
-  const apiKey = process.env.GROQ_API_KEY
-  if (!apiKey) {
-    res.status(500).json({ error: 'GROQ_API_KEY is not configured on the server' })
-    return
-  }
-
-  const body = req.body as DistillBody
-  if (typeof body.entryId !== 'string') {
-    res.status(400).json({ error: '"entryId" is required' })
-    return
-  }
-
-  const supabase = createUserScopedClient(accessToken)
-
-  const { data: entry, error: entryError } = await supabase
-    .from('journal_entries')
-    .select('id, content')
-    .eq('id', body.entryId)
-    .eq('user_id', user.id)
-    .single()
-
-  if (entryError || !entry) {
-    res.status(404).json({ error: 'Entry not found' })
-    return
-  }
-
   try {
+    const accessToken = req.headers.authorization?.replace(/^Bearer\s+/i, '')
+    const user = await verifyUser(req.headers.authorization)
+    if (!user || !accessToken) {
+      res.status(401).json({ error: 'Unauthorized' })
+      return
+    }
+
+    const apiKey = process.env.GROQ_API_KEY
+    if (!apiKey) {
+      res.status(500).json({ error: 'GROQ_API_KEY is not configured on the server' })
+      return
+    }
+
+    const body = req.body as DistillBody
+    if (typeof body.entryId !== 'string') {
+      res.status(400).json({ error: '"entryId" is required' })
+      return
+    }
+
+    const supabase = createUserScopedClient(accessToken)
+
+    const { data: entry, error: entryError } = await supabase
+      .from('journal_entries')
+      .select('id, content')
+      .eq('id', body.entryId)
+      .eq('user_id', user.id)
+      .single()
+
+    if (entryError || !entry) {
+      res.status(404).json({ error: 'Entry not found' })
+      return
+    }
+
     const distilled = await callGroq(apiKey, {
       model: GROQ_PRIMARY_MODEL,
       maxTokens: 60,
@@ -84,6 +84,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     res.status(200).json({ snap })
   } catch (err) {
-    res.status(500).json({ error: 'Unexpected error calling Groq API', detail: String(err) })
+    // Anything unexpected (a bad env var causing verifyUser's or
+    // createUserScopedClient's Supabase client to throw, a network
+    // hiccup, etc.) must still come back as JSON — an uncaught throw here
+    // becomes Vercel's own plain-text crash page, which breaks every
+    // client-side `response.json()` call.
+    console.error('distill-to-snap failed', err)
+    res.status(500).json({ error: 'Unexpected server error', detail: String(err) })
   }
 }
