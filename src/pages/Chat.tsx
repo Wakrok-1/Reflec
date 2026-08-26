@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { MagnifyingGlass } from '@phosphor-icons/react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { callApi } from '../lib/api'
@@ -198,7 +199,9 @@ export function Chat() {
 
         {pendingSearch && (
           <div className="slide-up-fade-in mx-4 mb-2 flex flex-col gap-2 rounded-card border border-hair border-[rgba(180,170,158,0.3)] bg-cream px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-xs text-charcoal">🔍 "{pendingSearch.query}"</p>
+            <p className="flex items-center gap-1.5 text-xs text-charcoal">
+              <MagnifyingGlass size={13} />"{pendingSearch.query}"
+            </p>
             <div className="flex shrink-0 gap-2">
               <button
                 onClick={skipSearch}

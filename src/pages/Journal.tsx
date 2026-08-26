@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { Camera } from '@phosphor-icons/react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { callApi } from '../lib/api'
@@ -304,9 +305,10 @@ export function Journal() {
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={uploading}
-                className="rounded-pill border border-hair border-[rgba(180,170,158,0.3)] px-3 py-2 text-xs text-stone disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-pill border border-hair border-[rgba(180,170,158,0.3)] px-3 py-2 text-xs text-stone disabled:opacity-50"
               >
-                {uploading ? 'Reading screenshot…' : '📷 Apple Journal screenshot'}
+                <Camera size={13} />
+                {uploading ? 'Reading screenshot…' : 'Apple Journal screenshot'}
               </button>
               <button
                 onClick={submitFull}

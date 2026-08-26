@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Lightning } from '@phosphor-icons/react'
 import { useAuth } from '../../contexts/AuthContext'
 import { supabase } from '../../lib/supabase'
 
@@ -44,10 +45,10 @@ export function SnapInput() {
     <>
       <button
         onClick={() => setOpen(true)}
-        className="shrink-0 whitespace-nowrap rounded-pill border border-hair border-[rgba(138,122,106,0.2)] px-3 py-2 text-xs font-medium text-[#6B5E52]"
+        className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-pill border border-hair border-[rgba(138,122,106,0.2)] px-3 py-2 text-xs font-medium text-[#6B5E52]"
         style={{ background: 'rgba(138,122,106,0.1)' }}
       >
-        ⚡ Snap
+        <Lightning size={13} weight="fill" /> Snap
       </button>
 
       {open && (
