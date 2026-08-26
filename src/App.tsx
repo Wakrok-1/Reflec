@@ -2,7 +2,10 @@ import { Route, Routes } from 'react-router-dom'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { AuthCallback } from './pages/AuthCallback'
 import { CharacterProfile } from './pages/CharacterProfile'
+import { Chat } from './pages/Chat'
+import { Goals } from './pages/Goals'
 import { Home } from './pages/Home'
+import { Journal } from './pages/Journal'
 import { Login } from './pages/Login'
 import { Onboarding } from './pages/Onboarding'
 import { Signup } from './pages/Signup'
@@ -26,6 +29,30 @@ export default function App() {
         element={
           <ProtectedRoute>
             <CharacterProfile />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/chat"
+        element={
+          <ProtectedRoute>
+            <Chat />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/journal"
+        element={
+          <ProtectedRoute>
+            <Journal />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/goals"
+        element={
+          <ProtectedRoute>
+            <Goals />
           </ProtectedRoute>
         }
       />

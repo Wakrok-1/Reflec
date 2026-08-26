@@ -48,3 +48,111 @@ body {
   color: var(--color-charcoal);
   -webkit-font-smoothing: antialiased;
 }
+
+/* Dove loading spinner (design spec section 6) */
+.dove-ring {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: #c084fc;
+  border-right-color: #818cf8;
+  animation: dove-spin 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  position: relative;
+}
+.dove-ring::after {
+  content: '🕊';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 18px;
+}
+@keyframes dove-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Typewriter quote cursor (design spec section 7) */
+@keyframes cursor-blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+.typewriter-cursor {
+  animation: cursor-blink 0.8s step-end 3;
+}
+.typewriter-cursor.faded {
+  animation: none;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+/* Island navbar shimmer overlay (design spec section 2) */
+@keyframes island-shimmer-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+.island-shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(129, 140, 248, 0.12),
+    rgba(192, 132, 252, 0.12),
+    transparent
+  );
+  animation: island-shimmer-sweep 3.5s ease-in-out infinite;
+}
+
+/* "Felt right" dove pulse (design spec section 7) */
+@keyframes felt-right-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(129, 140, 248, 0.45);
+    opacity: 1;
+  }
+  100% {
+    box-shadow: 0 0 0 14px rgba(192, 132, 252, 0);
+    opacity: 0;
+  }
+}
+.felt-right-pulse {
+  animation: felt-right-pulse 0.4s ease-out;
+}
+
+/* Chat message appear (design spec section 7) */
+@keyframes chat-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.chat-message-in {
+  animation: chat-message-in 200ms ease-out;
+}
+
+/* Suggestion bubble / snap sheet appear (design spec section 7) */
+@keyframes slide-up-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.slide-up-fade-in {
+  animation: slide-up-fade-in 300ms ease-out;
+}

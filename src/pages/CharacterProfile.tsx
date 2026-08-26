@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useProfile } from '../hooks/useProfile'
 import { supabase } from '../lib/supabase'
+import { MemoryControls } from '../components/MemoryControls'
 import { SuggestionBubble } from '../components/SuggestionBubble'
 import { dismissSuggestion, fetchDismissedFingerprints, isDismissed } from '../lib/suggestions'
 import type { Profile, TasteCategory, TasteProfileItem } from '../lib/database.types'
@@ -259,6 +260,8 @@ export function CharacterProfile() {
           ))}
         </div>
       </section>
+
+      <MemoryControls />
     </div>
   )
 }

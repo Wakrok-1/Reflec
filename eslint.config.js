@@ -5,7 +5,12 @@ import tseslint from 'typescript-eslint'
 import globals from 'globals'
 
 export default tseslint.config(
-  { ignores: ['dist'] },
+  // supabase/functions/** are Deno edge functions — different runtime,
+  // different globals, different conventions (e.g. @ts-ignore over
+  // @ts-expect-error, since Deno's own checker flags an @ts-expect-error
+  // as an error if the suppressed import happens to resolve cleanly).
+  // Type-checked separately with `deno check`, not this project's ESLint.
+  { ignores: ['dist', 'supabase/functions/**'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],

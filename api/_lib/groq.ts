@@ -7,6 +7,10 @@ const GROQ_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions'
 export const GROQ_PRIMARY_MODEL = 'openai/gpt-oss-120b'
 export const GROQ_FALLBACK_MODEL = 'openai/gpt-oss-20b'
 export const GROQ_VISION_MODEL = 'qwen/qwen3.6-27b'
+// Same model as the fallback, used here for its speed rather than as a
+// fallback path — the intent classifier pre-check (PRD 5.3) needs to be
+// fast and cheap, not the most capable model.
+export const GROQ_CLASSIFIER_MODEL = 'openai/gpt-oss-20b'
 
 export interface GroqMessage {
   role: 'system' | 'user' | 'assistant'
@@ -71,5 +75,49 @@ export async function callGroq(apiKey: string, options: CallGroqOptions) {
       return await requestGroq(apiKey, GROQ_FALLBACK_MODEL, options)
     }
     throw err
+  }
+}
+
+// Streaming variant for the main chat route — returns the raw response so
+// the caller can pipe Groq's SSE stream straight through to the browser
+// instead of waiting for the full completion.
+export async function streamGroq(apiKey: string, options: CallGroqOptions): Promise<Response> {
+  const model = options.model ?? GROQ_PRIMARY_MODEL
+  const response = await fetch(GROQ_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: options.messages,
+      max_tokens: options.maxTokens ?? 800,
+      temperature: options.temperature ?? 0.8,
+      stream: true,
+    }),
+  })
+
+  if (!response.ok || !response.body) {
+    const detail = await response.text().catch(() => '')
+    throw new GroqError(response.status, detail)
+  }
+
+  return response
+}
+
+// Parses one line of a Groq/OpenAI-style SSE stream ("data: {...}" or
+// "data: [DONE]") and extracts the text delta, if any.
+export function parseGroqStreamLine(line: string): string | null {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith('data:')) return null
+  const payload = trimmed.slice(5).trim()
+  if (payload === '[DONE]') return null
+  try {
+    const parsed = JSON.parse(payload)
+    const delta: string | undefined = parsed?.choices?.[0]?.delta?.content
+    return typeof delta === 'string' ? delta : null
+  } catch {
+    return null
   }
 }

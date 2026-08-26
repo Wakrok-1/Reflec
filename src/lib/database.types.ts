@@ -261,6 +261,15 @@ export type Database = {
       >
     }
     Views: Record<string, never>
-    Functions: Record<string, never>
+    Functions: {
+      match_journal_entries: {
+        Args: { query_embedding: number[]; match_user_id: string; match_count?: number }
+        Returns: { id: string; content: string; created_at: string; similarity: number }[]
+      }
+      match_chat_history: {
+        Args: { query_embedding: number[]; match_user_id: string; match_count?: number }
+        Returns: { id: string; content: string; created_at: string; similarity: number }[]
+      }
+    }
   }
 }

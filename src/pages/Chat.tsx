@@ -1,0 +1,247 @@
+import { useEffect, useRef, useState } from 'react'
+import { useAuth } from '../contexts/AuthContext'
+import { supabase } from '../lib/supabase'
+import { callApi } from '../lib/api'
+import { PageShell } from '../components/layout/PageShell'
+import { TypewriterQuote } from '../components/ui/TypewriterQuote'
+import { ChatBubble } from '../components/ui/ChatBubble'
+import { DoveLoader } from '../components/ui/DoveLoader'
+import { SnapInput } from '../components/ui/SnapInput'
+
+interface UIMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  feltRight?: boolean
+  /** Off-topic bounce shown locally — never sent to the model, never persisted. */
+  ephemeral?: boolean
+}
+
+interface ClassifyResult {
+  intent: 'on_topic' | 'off_topic' | 'search_needed'
+  search_query?: string
+  off_topic_reason?: string
+}
+
+const FALLBACK_QUOTES = [
+  'The wound is the place where the light enters you.',
+  'You are not required to set yourself on fire to keep others warm.',
+  'Almost everything will work again if you unplug it for a few minutes, including you.',
+  'What you seek is seeking you.',
+]
+
+function pickQuote() {
+  const dayIndex = Math.floor(Date.now() / 86_400_000) % FALLBACK_QUOTES.length
+  return FALLBACK_QUOTES[dayIndex]
+}
+
+export function Chat() {
+  const { user } = useAuth()
+  const [messages, setMessages] = useState<UIMessage[]>([])
+  const [input, setInput] = useState('')
+  const [sending, setSending] = useState(false)
+  const [pendingSearch, setPendingSearch] = useState<{ query: string; userText: string } | null>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!user) return
+    supabase
+      .from('chat_history')
+      .select('id, role, content')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: true })
+      .limit(50)
+      .then(({ data }) => {
+        if (data) setMessages(data.map((m) => ({ id: m.id, role: m.role, content: m.content })))
+      })
+  }, [user])
+
+  useEffect(() => {
+    requestAnimationFrame(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }))
+  }, [messages])
+
+  const conversationForApi = (extraUser?: string) =>
+    messages
+      .filter((m) => !m.ephemeral)
+      .map((m) => ({ role: m.role, content: m.content }))
+      .concat(extraUser ? [{ role: 'user' as const, content: extraUser }] : [])
+
+  const streamChat = async (userText: string, searchContext?: string) => {
+    if (!user) return
+    const assistantId = crypto.randomUUID()
+    setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '' }])
+    setSending(true)
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const token = sessionData.session?.access_token
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ messages: conversationForApi(userText), userId: user.id, searchContext }),
+      })
+
+      if (!response.ok || !response.body) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data?.error ?? 'Chat request failed')
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        const chunk = decoder.decode(value, { stream: true })
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + chunk } : m)),
+        )
+      }
+    } catch (err) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId
+            ? { ...m, content: m.content || `Something went wrong: ${String(err)}` }
+            : m,
+        ),
+      )
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const send = async () => {
+    const text = input.trim()
+    if (!text || sending || !user) return
+    setInput('')
+    setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: 'user', content: text }])
+
+    setSending(true)
+    let classification: ClassifyResult
+    try {
+      classification = await callApi<ClassifyResult>('/api/classify-intent', { message: text })
+    } catch {
+      classification = { intent: 'on_topic' }
+    }
+    setSending(false)
+
+    if (classification.intent === 'off_topic') {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          ephemeral: true,
+          content:
+            classification.off_topic_reason
+              ? "That's not really my world — I'm here for you, not that. What's actually going on today?"
+              : "That's not really my world — I'm here for you. What's actually going on today?",
+        },
+      ])
+      return
+    }
+
+    if (classification.intent === 'search_needed' && classification.search_query) {
+      setPendingSearch({ query: classification.search_query, userText: text })
+      return
+    }
+
+    await streamChat(text)
+  }
+
+  const confirmSearch = async () => {
+    if (!pendingSearch) return
+    const { query, userText } = pendingSearch
+    setPendingSearch(null)
+    setSending(true)
+    try {
+      const { summary } = await callApi<{ summary: string }>('/api/search', { query })
+      await streamChat(userText, summary)
+    } catch {
+      await streamChat(userText)
+    }
+  }
+
+  const skipSearch = async () => {
+    if (!pendingSearch) return
+    const { userText } = pendingSearch
+    setPendingSearch(null)
+    await streamChat(userText)
+  }
+
+  const markFeltRight = async (messageId: string) => {
+    if (!user) return
+    setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, feltRight: true } : m)))
+    await supabase.from('response_signals').insert({ user_id: user.id, felt_right: true })
+  }
+
+  return (
+    <PageShell>
+      <div className="mx-auto flex h-screen max-w-2xl flex-col">
+        <TypewriterQuote quote={pickQuote()} />
+
+        <div className="flex-1 space-y-2 overflow-y-auto px-4 py-4">
+          {messages
+            .filter((m) => m.content.length > 0)
+            .map((m) => (
+              <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <ChatBubble
+                  role={m.role}
+                  content={m.content}
+                  feltRight={m.feltRight}
+                  onFeltRight={() => markFeltRight(m.id)}
+                />
+              </div>
+            ))}
+          {sending && messages[messages.length - 1]?.content === '' && <DoveLoader />}
+          <div ref={scrollRef} />
+        </div>
+
+        {pendingSearch && (
+          <div className="slide-up-fade-in mx-4 mb-2 flex flex-col gap-2 rounded-card border border-hair border-[rgba(180,170,158,0.3)] bg-cream px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs text-charcoal">🔍 "{pendingSearch.query}"</p>
+            <div className="flex shrink-0 gap-2">
+              <button
+                onClick={skipSearch}
+                className="rounded-pill border border-hair border-[rgba(180,170,158,0.3)] px-3 py-1 text-xs text-stone"
+              >
+                Skip
+              </button>
+              <button
+                onClick={confirmSearch}
+                className="rounded-pill px-3 py-1 text-xs font-medium text-white"
+                style={{ background: 'var(--gradient-user-bubble)' }}
+              >
+                Search
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 px-4 pb-4">
+          <SnapInput />
+          <div
+            className="flex flex-1 items-center rounded-pill border border-hair border-[rgba(180,170,158,0.3)] px-3 py-2"
+            style={{ background: 'rgba(255,255,255,0.7)' }}
+          >
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), send())}
+              placeholder="say something..."
+              disabled={sending}
+              className="w-full bg-transparent text-xs text-charcoal outline-none placeholder:text-warm-muted"
+            />
+          </div>
+          <button
+            onClick={send}
+            disabled={sending || !input.trim()}
+            className="shrink-0 rounded-pill px-4 py-2 text-xs font-medium text-white disabled:opacity-50"
+            style={{ background: 'var(--gradient-user-bubble)' }}
+          >
+            Send
+          </button>
+        </div>
+      </div>
+    </PageShell>
+  )
+}

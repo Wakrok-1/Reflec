@@ -1,12 +1,17 @@
 import type { ReactNode } from 'react'
+import { IslandNav } from '../ui/IslandNav'
 
 // Linen background + island nav wrapper used by every page (design spec
-// v1.0, section 5.2). Stub for Sprint 2 — currently a pass-through so it's
-// safe to use before it's filled in.
+// section 5.2). pb-28 keeps content clear of the fixed floating navbar.
 interface PageShellProps {
   children: ReactNode
 }
 
 export function PageShell({ children }: PageShellProps) {
-  return <>{children}</>
+  return (
+    <div className="min-h-screen bg-linen pb-28">
+      {children}
+      <IslandNav />
+    </div>
+  )
 }

@@ -54,7 +54,13 @@ export function Home() {
         </button>
       </div>
 
-      <div className="mt-6">
+      <div className="mt-6 flex gap-3">
+        <Link
+          to="/chat"
+          className="inline-block rounded-lg bg-reflection-600 px-4 py-2 text-sm font-medium text-white hover:bg-reflection-700"
+        >
+          Open Chat
+        </Link>
         <Link
           to="/profile"
           className="inline-block rounded-lg border border-reflection-200 bg-white px-4 py-2 text-sm font-medium text-reflection-700 hover:bg-reflection-100"
