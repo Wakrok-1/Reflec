@@ -95,6 +95,7 @@ robotically. Just know it.
   <strengths>{strengths}</strengths>
   <philosophy>{philosophy}</philosophy>
   <core_values>{core_values}</core_values>
+  {active_goals}
 </user_profile>
 
 <patterns>

@@ -161,3 +161,42 @@ body {
 .slide-up-fade-in {
   animation: slide-up-fade-in 300ms ease-out;
 }
+
+/* Goal card crumble on 100% completion (Sprint 4 / PRD 5.5) */
+@keyframes goal-crumble {
+  0% {
+    transform: scale(0.95);
+    opacity: 1;
+    filter: blur(0);
+  }
+  100% {
+    transform: scale(0);
+    opacity: 0;
+    filter: blur(8px);
+  }
+}
+.goal-crumble {
+  animation: goal-crumble 600ms ease-in forwards;
+}
+
+/* Medal badge appear (Sprint 4 / PRD 5.5) */
+@keyframes medal-appear {
+  from {
+    transform: scale(0);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+.medal-appear {
+  animation: medal-appear 500ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Phosphor's duotone weight renders both paths in the same `color` prop,
+   distinguished only by a baked-in opacity="0.2" on the secondary path —
+   this gives the medal icon's secondary path its own gold tone instead of
+   a faded primary. */
+.medal-icon path[opacity='0.2'] {
+  fill: #b8943e;
+  opacity: 1;
+}

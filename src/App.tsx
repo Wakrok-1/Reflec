@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { Route, Routes } from 'react-router-dom'
 import { ProtectedRoute } from './components/ProtectedRoute'
+import { Achievements } from './pages/Achievements'
 import { AuthCallback } from './pages/AuthCallback'
 import { CharacterProfile } from './pages/CharacterProfile'
 import { Chat } from './pages/Chat'
@@ -68,6 +69,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <Goals />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/achievements"
+        element={
+          <ProtectedRoute>
+            <Achievements />
           </ProtectedRoute>
         }
       />

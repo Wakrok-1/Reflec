@@ -5,8 +5,9 @@ own words, journal entries, and activity data. See the full product spec in
 the PRD shared with this repo (v1.5).
 
 **Status:** Sprint 0 (Foundation), Sprint 1 (Onboarding + Character Profile),
-Sprint 2 (Chat Core), and Sprint 3 (Full Journal + PDF Export) are built.
-Goals, charts, and integrations land in later sprints.
+Sprint 2 (Chat Core), Sprint 3 (Full Journal + PDF Export), and Sprint 4
+(Goals + Achievements) are built. Charts and integrations land in later
+sprints.
 
 ## Stack
 
@@ -117,14 +118,16 @@ src/
   types/onboarding.ts        Shape of the onboarding extraction JSON
   types/suggestions.ts       Suggestion bubble discriminated union
   lib/exportBlocks.ts        PDF export builder's Block/CanvasConfig data model
+  lib/goals.ts                Big Life Goals/Increments/Bucket List data layer + progress math
   pages/                     Login, Signup, AuthCallback, Home, Onboarding,
-                             CharacterProfile, Chat, Journal, JournalExport, Goals (stub)
+                             CharacterProfile, Chat, Journal, JournalExport, Goals, Achievements
   components/
     ProtectedRoute.tsx
     SuggestionBubble.tsx      Accept/Dismiss approval bubble (PRD 5.2, 7.3)
     MemoryControls.tsx        "What does my AI know about me?" + mark-private toggles
-    ui/                       DoveLoader, IslandNav, ChatBubble, TypewriterQuote,
-                              SnapInput, ClassBadge/GoalCard/MedalBadge/CategoryPill (stubs)
+    ui/                       DoveLoader, IslandNav, ChatBubble, TypewriterQuote, SnapInput,
+                              GoalCard, MedalBadge, Checkbox, InlineEditableText,
+                              ClassBadge/CategoryPill (stubs)
     layout/PageShell.tsx      Linen background + island nav wrapper
     export/
       BlockEditorStep.tsx      Step 2: dnd-kit reorder, inline edit, block library sidebar
@@ -142,6 +145,7 @@ api/
   vision-extract.ts           Apple Journal screenshot OCR via qwen/qwen3.6-27b vision
   onboarding-chat.ts          One turn of the AI interview (Groq)
   onboarding-finalize.ts      Extracts profile/taste suggestions (Groq, JSON mode)
+  goal-suggest.ts              AI-suggested goal or bucket-list items (Groq, JSON mode)
   groq-test.ts                Server-side Groq connectivity check
   _lib/verifyUser.ts          Verifies the caller's Supabase session
   _lib/supabaseServer.ts      RLS-scoped Supabase client (no service-role key, ever)

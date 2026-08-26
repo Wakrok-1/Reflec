@@ -7,15 +7,27 @@ import type { Suggestion } from '../types/suggestions'
 // suggestions that were already dismissed before, so they never resurface
 // (PRD 5.2: "Dismissed suggestions are not re-surfaced").
 export function fingerprintSuggestion(s: Suggestion): string {
-  if (s.type === 'profile_field') {
-    const value = Array.isArray(s.value) ? s.value.join('|') : String(s.value)
-    return `${s.field}:${value}`.toLowerCase().trim()
+  switch (s.type) {
+    case 'profile_field': {
+      const value = Array.isArray(s.value) ? s.value.join('|') : String(s.value)
+      return `${s.field}:${value}`.toLowerCase().trim()
+    }
+    case 'taste_entry':
+      return `${s.category}:${s.item}`.toLowerCase().trim()
+    case 'goal_suggestion':
+      return `goal:${s.title}`.toLowerCase().trim()
+    case 'bucket_list_suggestion':
+      return `bucket:${s.item}`.toLowerCase().trim()
   }
-  return `${s.category}:${s.item}`.toLowerCase().trim()
 }
 
+// goal/bucket-list nudges fall under the schema's general "growth-page
+// nudge" bucket (see dismissed_suggestions' check constraint) — no new
+// suggestion_type value needed for them.
 function suggestionTypeFor(s: Suggestion): DismissedSuggestionType {
-  return s.type === 'profile_field' ? 'profile_field' : 'taste_entry'
+  if (s.type === 'profile_field') return 'profile_field'
+  if (s.type === 'taste_entry') return 'taste_entry'
+  return 'growth_insight'
 }
 
 export async function fetchDismissedFingerprints(userId: string): Promise<Set<string>> {

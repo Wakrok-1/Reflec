@@ -14,6 +14,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import { useAuth } from '../../contexts/AuthContext'
 import { callApi } from '../../lib/api'
 import {
   BLOCK_LIBRARY,
@@ -23,6 +24,7 @@ import {
   type BlockType,
   type CanvasConfig,
 } from '../../lib/exportBlocks'
+import { fetchGoalsData, type GoalWithIncrements } from '../../lib/goals'
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 640px)').matches)
@@ -53,9 +55,16 @@ export function BlockEditorStep({
   onContinue,
 }: BlockEditorStepProps) {
   const isMobile = useIsMobile()
+  const { user } = useAuth()
+  const [activeGoals, setActiveGoals] = useState<GoalWithIncrements[]>([])
   const days = Array.from(new Set(blocks.map((b) => b.day))).sort()
   const allDays = days.length > 0 ? days : [config.startDate]
   const [activeDay, setActiveDay] = useState(allDays[0])
+
+  useEffect(() => {
+    if (!user) return
+    fetchGoalsData(user.id).then(({ bigGoals }) => setActiveGoals(bigGoals))
+  }, [user])
 
   useEffect(() => {
     if (!allDays.includes(activeDay)) setActiveDay(allDays[0])
@@ -154,6 +163,7 @@ export function BlockEditorStep({
                           <BlockCard
                             key={block.id}
                             block={block}
+                            activeGoals={activeGoals}
                             onUpdate={(patch) => updateBlock(block.id, patch)}
                             onRemove={() => removeBlock(block.id)}
                             onMoveUp={index > 0 ? () => moveBlock(day, index, -1) : undefined}
@@ -171,6 +181,7 @@ export function BlockEditorStep({
                               <SortableBlockCard
                                 key={block.id}
                                 block={block}
+                                activeGoals={activeGoals}
                                 onUpdate={(patch) => updateBlock(block.id, patch)}
                                 onRemove={() => removeBlock(block.id)}
                                 onMoveUp={index > 0 ? () => moveBlock(day, index, -1) : undefined}
@@ -218,6 +229,7 @@ function mergeByOriginalOrder(original: Block[], day: string, reorderedDay: Bloc
 
 interface BlockCardProps {
   block: Block
+  activeGoals: GoalWithIncrements[]
   onUpdate: (patch: Partial<Block>) => void
   onRemove: () => void
   onMoveUp?: () => void
@@ -235,7 +247,17 @@ function SortableBlockCard(props: Omit<BlockCardProps, 'dragHandleProps' | 'setN
   )
 }
 
-function BlockCard({ block, onUpdate, onRemove, onMoveUp, onMoveDown, dragHandleProps, setNodeRef, style }: BlockCardProps) {
+function BlockCard({
+  block,
+  activeGoals,
+  onUpdate,
+  onRemove,
+  onMoveUp,
+  onMoveDown,
+  dragHandleProps,
+  setNodeRef,
+  style,
+}: BlockCardProps) {
   return (
     <div
       ref={setNodeRef}
@@ -269,7 +291,7 @@ function BlockCard({ block, onUpdate, onRemove, onMoveUp, onMoveDown, dragHandle
           </button>
         </div>
       </div>
-      <BlockContent block={block} onUpdate={onUpdate} />
+      <BlockContent block={block} activeGoals={activeGoals} onUpdate={onUpdate} />
     </div>
   )
 }
@@ -298,7 +320,15 @@ function EditableText({
   )
 }
 
-function BlockContent({ block, onUpdate }: { block: Block; onUpdate: (patch: Partial<Block>) => void }) {
+function BlockContent({
+  block,
+  activeGoals,
+  onUpdate,
+}: {
+  block: Block
+  activeGoals: GoalWithIncrements[]
+  onUpdate: (patch: Partial<Block>) => void
+}) {
   const promptFetched = useRef(false)
 
   useEffect(() => {
@@ -361,10 +391,34 @@ function BlockContent({ block, onUpdate }: { block: Block; onUpdate: (patch: Par
     case 'goal_of_day':
       return (
         <div>
+          {activeGoals.length > 0 && (
+            <select
+              value={block.goalId ?? ''}
+              onChange={(e) => {
+                const id = e.target.value
+                if (!id) {
+                  onUpdate({ goalId: null } as Partial<Block>)
+                  return
+                }
+                const entry = activeGoals.find((g) => g.goal.id === id)
+                if (entry) {
+                  onUpdate({ goalId: entry.goal.id, title: entry.goal.title, progress: entry.progress } as Partial<Block>)
+                }
+              }}
+              className="mb-2 w-full rounded-md border border-hair border-[rgba(180,170,158,0.3)] bg-white px-2 py-1 text-[11px] text-charcoal"
+            >
+              <option value="">Custom…</option>
+              {activeGoals.map((entry) => (
+                <option key={entry.goal.id} value={entry.goal.id}>
+                  {entry.goal.title} ({entry.progress}%)
+                </option>
+              ))}
+            </select>
+          )}
           <EditableText
             value={block.title}
             placeholder="Goal title…"
-            onChange={(title) => onUpdate({ title })}
+            onChange={(title) => onUpdate({ title, goalId: null })}
             className="mb-2 text-[13px] font-medium text-charcoal"
           />
           <input
@@ -372,8 +426,9 @@ function BlockContent({ block, onUpdate }: { block: Block; onUpdate: (patch: Par
             min={0}
             max={100}
             value={block.progress}
+            disabled={block.goalId !== null}
             onChange={(e) => onUpdate({ progress: Number(e.target.value) } as Partial<Block>)}
-            className="w-full"
+            className="w-full disabled:opacity-50"
           />
           <p className="text-[10px] text-warm-muted">{block.progress}% complete</p>
         </div>

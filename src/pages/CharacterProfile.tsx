@@ -120,7 +120,7 @@ export function CharacterProfile() {
     try {
       if (s.type === 'profile_field') {
         await acceptProfileField(s)
-      } else {
+      } else if (s.type === 'taste_entry') {
         await acceptTasteEntry(s)
       }
       setPending((prev) => prev.filter((p) => p.id !== s.id))

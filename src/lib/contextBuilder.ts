@@ -1,5 +1,5 @@
 import { SYSTEM_PROMPT } from './systemPrompt'
-import type { PatternExtraction, Profile, MemorySummary } from './database.types'
+import type { Goal, PatternExtraction, Profile, MemorySummary } from './database.types'
 
 // Token budget (PRD 7.2 "Per-Request Context Injection"). Profile +
 // patterns are the fixed "hot" tier and are never trimmed; summaries fill
@@ -49,6 +49,13 @@ export interface VectorHit {
   similarity: number
 }
 
+export interface ActiveGoalSummary {
+  title: string
+  progress: number
+  incrementsDone: number
+  incrementsTotal: number
+}
+
 export interface MemoryBundle {
   profile: Profile
   patterns: PatternExtraction | null
@@ -56,6 +63,48 @@ export interface MemoryBundle {
   summaries: MemorySummary[]
   /** Sorted by similarity, most relevant first. */
   vectorHits: VectorHit[]
+  /** Active big_goal rows with their increment progress (PRD 5.5 / Sprint 4). */
+  activeGoals: ActiveGoalSummary[]
+}
+
+// Reduces flat `goals` table rows (big_goal + increment, any status) down
+// to the active big goals' progress — shared by api/chat.ts (context
+// injection) and, indirectly, by the Goals page's own progress math.
+export function buildActiveGoalsSummary(rows: Goal[]): ActiveGoalSummary[] {
+  const incrementsByParent = new Map<string, Goal[]>()
+  for (const row of rows) {
+    if (row.type !== 'increment' || !row.parent_goal_id) continue
+    const list = incrementsByParent.get(row.parent_goal_id) ?? []
+    list.push(row)
+    incrementsByParent.set(row.parent_goal_id, list)
+  }
+
+  return rows
+    .filter((g) => g.type === 'big_goal' && g.status === 'active')
+    .map((g) => {
+      const increments = incrementsByParent.get(g.id) ?? []
+      const incrementsDone = increments.filter((i) => i.status === 'completed').length
+      const incrementsTotal = increments.length
+      return {
+        title: g.title,
+        progress: incrementsTotal > 0 ? Math.round((incrementsDone / incrementsTotal) * 100) : 0,
+        incrementsDone,
+        incrementsTotal,
+      }
+    })
+}
+
+function escapeXmlAttr(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function formatActiveGoals(goals: ActiveGoalSummary[] | undefined): string {
+  if (!goals || goals.length === 0) return '<active_goals />'
+  const lines = goals.map(
+    (g) =>
+      `  <goal title="${escapeXmlAttr(g.title)}" progress="${g.progress}%" increments_done="${g.incrementsDone}" increments_total="${g.incrementsTotal}" />`,
+  )
+  return `<active_goals>\n${lines.join('\n')}\n</active_goals>`
 }
 
 export interface BuiltContext {
@@ -83,6 +132,7 @@ export function buildContextValues(bundle: MemoryBundle): BuiltContext {
     response_preference: formatRecord(patterns?.response_preference, 'not yet established'),
     rolling_summary_last_7_days: 'no recent summary yet',
     vector_search_hits: 'nothing relevant surfaced yet',
+    active_goals: formatActiveGoals(bundle.activeGoals),
   }
 
   // Hot tier (profile + patterns) is fixed and never trimmed, but still

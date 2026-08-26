@@ -1,13 +1,23 @@
 import type { Suggestion } from '../types/suggestions'
 
 function describe(s: Suggestion): { title: string; detail: string } {
-  if (s.type === 'profile_field') {
-    const value = Array.isArray(s.value) ? s.value.join(', ') : String(s.value)
-    return { title: s.label, detail: value }
-  }
-  return {
-    title: `${s.category[0].toUpperCase()}${s.category.slice(1)}: ${s.item}`,
-    detail: s.context ?? '',
+  switch (s.type) {
+    case 'profile_field': {
+      const value = Array.isArray(s.value) ? s.value.join(', ') : String(s.value)
+      return { title: s.label, detail: value }
+    }
+    case 'taste_entry':
+      return {
+        title: `${s.category[0].toUpperCase()}${s.category.slice(1)}: ${s.item}`,
+        detail: s.context ?? '',
+      }
+    case 'goal_suggestion':
+      return {
+        title: `Goal: ${s.title}`,
+        detail: s.increments.length > 0 ? `Steps: ${s.increments.join(', ')}` : s.description ?? '',
+      }
+    case 'bucket_list_suggestion':
+      return { title: `Bucket list: ${s.item}`, detail: s.context ?? '' }
   }
 }
 

@@ -18,4 +18,19 @@ export interface TasteEntrySuggestion {
   context: string | null
 }
 
-export type Suggestion = ProfileFieldSuggestion | TasteEntrySuggestion
+export interface GoalSuggestion {
+  type: 'goal_suggestion'
+  id: string
+  title: string
+  description: string | null
+  increments: string[]
+}
+
+export interface BucketListSuggestion {
+  type: 'bucket_list_suggestion'
+  id: string
+  item: string
+  context: string | null
+}
+
+export type Suggestion = ProfileFieldSuggestion | TasteEntrySuggestion | GoalSuggestion | BucketListSuggestion

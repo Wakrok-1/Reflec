@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { verifyUser } from './_lib/verifyUser'
 import { createUserScopedClient } from './_lib/supabaseServer'
 import { GROQ_PRIMARY_MODEL, parseGroqStreamLine, streamGroq, type GroqMessage } from './_lib/groq'
-import { renderSystemPrompt, type MemoryBundle, type VectorHit } from '../src/lib/contextBuilder'
+import { buildActiveGoalsSummary, renderSystemPrompt, type MemoryBundle, type VectorHit } from '../src/lib/contextBuilder'
 import type { PatternExtraction, Profile } from '../src/lib/database.types'
 
 interface ChatRequestBody {
@@ -54,16 +54,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const supabase = createUserScopedClient(accessToken)
 
-    const [{ data: profile, error: profileError }, { data: patterns }, { data: summaries }] = await Promise.all([
-      supabase.from('profiles').select('*').eq('id', user.id).single(),
-      supabase.from('pattern_extractions').select('*').eq('user_id', user.id).maybeSingle(),
-      supabase
-        .from('memory_summaries')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('period_end', { ascending: false })
-        .limit(20),
-    ])
+    const [{ data: profile, error: profileError }, { data: patterns }, { data: summaries }, { data: goalRows }] =
+      await Promise.all([
+        supabase.from('profiles').select('*').eq('id', user.id).single(),
+        supabase.from('pattern_extractions').select('*').eq('user_id', user.id).maybeSingle(),
+        supabase
+          .from('memory_summaries')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('period_end', { ascending: false })
+          .limit(20),
+        supabase.from('goals').select('*').eq('user_id', user.id).in('type', ['big_goal', 'increment']),
+      ])
 
     if (profileError || !profile) {
       res.status(500).json({ error: 'Could not load user profile' })
@@ -126,6 +128,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       patterns: (patterns as PatternExtraction) ?? null,
       summaries: summaries ?? [],
       vectorHits,
+      activeGoals: buildActiveGoalsSummary(goalRows ?? []),
     }
 
     const { prompt: systemPrompt } = renderSystemPrompt(bundle)

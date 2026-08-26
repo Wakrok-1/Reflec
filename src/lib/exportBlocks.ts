@@ -62,6 +62,8 @@ export interface GoalOfDayBlock extends BaseBlock {
   type: 'goal_of_day'
   title: string
   progress: number
+  /** The real goals-table row this reflects, if picked from an active goal rather than typed by hand. */
+  goalId: string | null
 }
 export interface JournalPromptBlock extends BaseBlock {
   type: 'journal_prompt'
@@ -131,7 +133,7 @@ export function createBlock(type: BlockType, day: string): Block {
     case 'snap_collection':
       return { id: blockId(), type, day, snaps: [] }
     case 'goal_of_day':
-      return { id: blockId(), type, day, title: '', progress: 0 }
+      return { id: blockId(), type, day, title: '', progress: 0, goalId: null }
     case 'journal_prompt':
       return { id: blockId(), type, day, prompt: '' }
     case 'photo':

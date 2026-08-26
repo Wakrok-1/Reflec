@@ -15,6 +15,20 @@ import {
   type PageColorKey,
   type PageSize,
 } from '../lib/exportBlocks'
+import { fetchGoalsData, type GoalWithIncrements } from '../lib/goals'
+
+// "Most recently updated" includes increment check-offs, not just edits to
+// the goal row itself — checking off a step is the most common way a goal
+// actually changes day to day.
+function lastActivity(entry: GoalWithIncrements): number {
+  const timestamps = [entry.goal.updated_at, ...entry.increments.map((i) => i.updated_at)]
+  return Math.max(...timestamps.map((t) => new Date(t).getTime()))
+}
+
+function pickFeaturedGoal(bigGoals: GoalWithIncrements[]): GoalWithIncrements | null {
+  if (bigGoals.length === 0) return null
+  return bigGoals.reduce((latest, entry) => (lastActivity(entry) > lastActivity(latest) ? entry : latest))
+}
 
 const today = new Date().toISOString().slice(0, 10)
 
@@ -39,7 +53,7 @@ export function JournalExport() {
     if (!user) return
     setLoading(true)
     try {
-      const [{ data: journalEntries }, { data: snaps }, { data: privateRows }] = await Promise.all([
+      const [{ data: journalEntries }, { data: snaps }, { data: privateRows }, { bigGoals }] = await Promise.all([
         supabase
           .from('journal_entries')
           .select('*')
@@ -55,6 +69,7 @@ export function JournalExport() {
           .lt('created_at', `${config.endDate}T23:59:59.999`)
           .order('created_at', { ascending: true }),
         supabase.from('private_entries').select('entry_id, entry_type').eq('user_id', user.id),
+        fetchGoalsData(user.id),
       ])
 
       const privateJournalIds = new Set(
@@ -84,6 +99,18 @@ export function JournalExport() {
             snaps: daySnaps.map((s) => s.content),
           })
         }
+      }
+
+      const featured = pickFeaturedGoal(bigGoals)
+      if (featured) {
+        newBlocks.push({
+          id: `god-${featured.goal.id}`,
+          type: 'goal_of_day',
+          day: days[days.length - 1] ?? config.startDate,
+          title: featured.goal.title,
+          progress: featured.progress,
+          goalId: featured.goal.id,
+        })
       }
 
       setBlocks(newBlocks)
