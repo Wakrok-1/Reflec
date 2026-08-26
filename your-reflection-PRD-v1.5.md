@@ -246,11 +246,16 @@ the design spec); not yet wired into the Character Profile page.
   - **Suggestion ready** — the preference toggle and delivery plumbing
     exist, but nothing generates weekly suggestions yet (5.6 is still
     Planned), so this type has no automatic trigger today.
-- **Delivery:** `api/cron/daily-checkin.ts`, a Vercel Cron job
-  (`vercel.json`, daily at 09:00 UTC) gated by `CRON_SECRET`, sweeps every
-  account with a stored subscription, checks per-user preferences and
-  quiet hours, and sends via `api/_lib/webpush.ts`. `notification_log`
-  dedupes so a goal or a day is never double-notified.
+- **Delivery (moved off Vercel Cron):** a Supabase pg_cron job
+  (`0007_pg_cron_daily_checkin.sql`, daily at 09:00 UTC) invokes the
+  `daily-checkin` Edge Function via `pg_net`, authenticated with this
+  project's own service_role key. That function sweeps every account with
+  a stored subscription, checks per-user preferences and quiet hours,
+  personalizes via Groq, and delivers by calling this app's own
+  `/api/send-notification` (its `CRON_SECRET`-gated trusted path), which
+  owns the actual VAPID/`web-push` mechanics via `api/_lib/webpush.ts`.
+  `notification_log` dedupes so a goal or a day is never double-notified.
+  Vercel Cron is not used anywhere in this app.
 - **Known limitation:** quiet hours (`profiles.notification_prefs.quiet_hours_start/end`)
   are compared against the cron's UTC clock — there's no per-user timezone
   stored anywhere yet, so they're only precisely accurate for users near
@@ -276,6 +281,71 @@ bubble first, never pivot a struggling user to a hotline and disengage).
 Pattern extraction (turning raw conversation into structured
 profile/taste/memory suggestions) always runs in Groq's JSON mode with an
 explicit schema — never free-text parsing.
+
+`[CONVERSATION POLICY]` (inserted after `[BEHAVIOUR]` — this prompt has no
+`[PERSONALITY]` section to hang it off) describes the conversational
+moves available to the model in prose; 7.1a below is the mechanism that
+actually enforces one of them per response.
+
+### 7.1a Conversation Engine
+
+Sits between the context builder and the main `gpt-oss-120b` call inside
+`api/chat.ts`. A second, fast `gpt-oss-20b` pre-call (`api/_lib/conversationAnalyzer.ts`,
+distinct from the intent classifier in 5.3 — that one decides *whether*
+the main model should be reached at all; this one decides *how* it should
+respond) analyzes the user's latest message and recent turns, returning:
+
+```json
+{
+  "user_intent": "venting|sharing|asking|casual|reflecting|excited|processing",
+  "emotion": "frustrated|sad|happy|anxious|neutral|excited|tired",
+  "energy": "high|medium|low",
+  "advice_wanted": true,
+  "question_budget": 0,
+  "conversational_move": "REACT|REFLECT|RELATE|CHALLENGE|SHARE|PLAY|EXPLORE|SILENCE",
+  "response_length": "tiny|short|medium|long",
+  "multi_message": false,
+  "message_count": 1,
+  "can_reference_past": true,
+  "can_change_topic": true
+}
+```
+
+This is sanitized against explicit enums with safe defaults (fails open,
+matching 5.3's classifier), plus two hard rules enforced in code rather
+than left to the model's judgment: `SILENCE` always forces
+`question_budget` to 0, and if any of the last 3 assistant turns already
+contains a `?`, `question_budget` is forced to 0 regardless of what the
+analyzer returned.
+
+The result is rendered into a `[CONVERSATION DIRECTIVE — follow exactly,
+overrides general rules for this response]` block and injected as its own
+system message immediately before the actual conversation turns — never
+string-concatenated into the locked-wording `SYSTEM_PROMPT` template
+itself.
+
+**Multi-message responses:** when `multi_message` is true, the main call
+switches to Groq's JSON mode and an extra system message instructs it to
+return `{"messages": [{"text": string, "delay": number}]}` (delays in
+milliseconds, e.g. 0/800/1600) instead of streaming plain text. The
+server responds with that JSON payload directly (`Content-Type:
+application/json`) rather than a streamed body; the client
+(`src/pages/Chat.tsx`) distinguishes the two by response content-type and
+renders each message as its own chat bubble, waiting `delay` ms and
+showing a dove-loader between each — the way a person sends a few texts
+in a row rather than one block. Malformed multi-message JSON falls back
+to treating the raw text as a single message rather than failing the
+request. The assembled text (all messages joined) is what's actually
+persisted to `chat_history`, so vector search and pattern extraction see
+one coherent turn either way.
+
+**Emotional state is never persisted** — the analyzer's output exists
+only for the duration of building that one response's prompt. It is not
+written to `pattern_extractions` or any other table; the durable, cross-session
+version of "how this user tends to feel/communicate" is what
+`pattern_extractions` already accumulates via the separate async
+extraction job (7.2), which operates on a much longer time horizon than a
+single message's transient mood.
 
 ### 7.2 Per-Request Context Injection
 

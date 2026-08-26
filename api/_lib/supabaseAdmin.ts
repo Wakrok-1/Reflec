@@ -11,9 +11,14 @@ import type { Database } from '../../src/lib/database.types'
 //      Supabase session; the only proof of "which user" is possession of
 //      the opaque, single-use `state` value this app minted and handed
 //      to Google (see oauth_states in 0006_sprint5_integrations.sql).
-//   2. api/cron/daily-checkin.ts — a Vercel Cron invocation, gated by
-//      CRON_SECRET, that must read across *all* users to decide who's
-//      due for a notification. There is no per-request user to scope to.
+//   2. api/send-notification.ts's trusted path — called by the Supabase
+//      daily-checkin Edge Function (itself invoked by pg_cron, see
+//      0007_pg_cron_daily_checkin.sql), authenticated with CRON_SECRET
+//      rather than a session, to look up an arbitrary user's push
+//      subscription. The cross-account "who's due for a notification"
+//      decision happens in that Edge Function instead, using its own
+//      SUPABASE_SERVICE_ROLE_KEY (Supabase auto-injects this into every
+//      Edge Function) — not this file, which is Node-only.
 //
 // Both call sites must explicitly filter every query by the specific
 // user_id they've resolved through their own narrow, documented

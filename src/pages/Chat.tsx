@@ -57,6 +57,7 @@ export function Chat() {
   const [showNotifyPrompt, setShowNotifyPrompt] = useState(false)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [waitingForNext, setWaitingForNext] = useState(false)
   const [pendingSearch, setPendingSearch] = useState<{ query: string; userText: string } | null>(null)
   const [pendingEvent, setPendingEvent] = useState<{
     title: string
@@ -106,10 +107,20 @@ export function Chat() {
       .map((m) => ({ role: m.role, content: m.content }))
       .concat(extraUser ? [{ role: 'user' as const, content: extraUser }] : [])
 
+  // Renders a multi-message response (Conversation Engine, PRD 7.0) as
+  // separate bubbles appearing one after another with natural delays,
+  // the way a person sends a few texts in a row rather than one block.
+  const renderMultiMessages = async (msgs: { text: string; delay: number }[]) => {
+    for (const m of msgs) {
+      setWaitingForNext(true)
+      await new Promise((resolve) => setTimeout(resolve, Math.min(Math.max(m.delay, 0), 4000)))
+      setWaitingForNext(false)
+      setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: 'assistant', content: m.text }])
+    }
+  }
+
   const streamChat = async (userText: string, searchContext?: string) => {
     if (!user) return
-    const assistantId = crypto.randomUUID()
-    setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '' }])
     setSending(true)
 
     try {
@@ -121,11 +132,26 @@ export function Chat() {
         body: JSON.stringify({ messages: conversationForApi(userText), userId: user.id, searchContext }),
       })
 
+      // A multi-message reply comes back as one JSON payload instead of a
+      // streamed text/plain body — the shape the server chose based on the
+      // Conversation Engine's analysis, not something the client asked for.
+      const contentType = response.headers.get('content-type') ?? ''
+      if (contentType.includes('application/json')) {
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok || !Array.isArray(data?.messages)) {
+          throw new Error(data?.error ?? 'Chat request failed')
+        }
+        await renderMultiMessages(data.messages)
+        return
+      }
+
       if (!response.ok || !response.body) {
         const data = await response.json().catch(() => ({}))
         throw new Error(data?.error ?? 'Chat request failed')
       }
 
+      const assistantId = crypto.randomUUID()
+      setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '' }])
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       for (;;) {
@@ -137,15 +163,13 @@ export function Chat() {
         )
       }
     } catch (err) {
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? { ...m, content: m.content || `Something went wrong: ${String(err)}` }
-            : m,
-        ),
-      )
+      setMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: 'assistant', content: `Something went wrong: ${String(err)}` },
+      ])
     } finally {
       setSending(false)
+      setWaitingForNext(false)
     }
   }
 
@@ -295,7 +319,7 @@ export function Chat() {
                 />
               </div>
             ))}
-          {sending && messages[messages.length - 1]?.content === '' && <DoveLoader />}
+          {((sending && messages[messages.length - 1]?.content === '') || waitingForNext) && <DoveLoader />}
           <div ref={scrollRef} />
         </div>
 

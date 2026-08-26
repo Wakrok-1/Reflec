@@ -95,15 +95,41 @@ sync, or context injection exists. Charts land in a later sprint.
 ## Deploying to Vercel
 
 1. Push this repo to GitHub and import it in [Vercel](https://vercel.com/new).
-2. Vercel auto-detects the Vite framework and `vercel.json`'s build settings,
-   including the `crons` entry that fires `/api/cron/daily-checkin` daily —
-   Vercel Cron Jobs require a Pro (or higher) plan.
+2. Vercel auto-detects the Vite framework and `vercel.json`'s build settings.
+   The daily notification sweep runs on Supabase's own pg_cron instead of
+   Vercel Cron (see "Scheduling the daily notification sweep" below), so
+   no Vercel Cron / paid-plan requirement applies.
 3. Add every variable from `.env.example` in the Vercel project's
    **Settings → Environment Variables**.
 4. Add your production domain's `/auth/callback` URL to Supabase's redirect
    URL allow-list, and both `/auth/callback` and `/api/google-callback` to
    the Google OAuth client's authorized redirect URIs.
 5. Deploy. Every push to the connected branch gets a preview deployment.
+
+## Scheduling the daily notification sweep
+
+The daily check-in / goal-reminder sweep runs on Supabase's own pg_cron,
+which invokes a Supabase Edge Function that calls back into this app's
+`/api/send-notification` for actual delivery — not a Vercel Cron job.
+
+1. Deploy the Edge Function and set its secrets (`CRON_SECRET` must be the
+   same value as the Vercel project's `CRON_SECRET` env var):
+   ```bash
+   npx supabase functions deploy daily-checkin
+   npx supabase secrets set GROQ_API_KEY=<your-groq-key> APP_URL=https://<your-app>.vercel.app CRON_SECRET=<your-cron-secret>
+   ```
+2. One-time manual step in the Supabase SQL editor (never commit these
+   values — that's why they aren't in the migration itself):
+   ```sql
+   alter database postgres set "app.settings.project_url" to 'https://<your-project-ref>.supabase.co';
+   alter database postgres set "app.settings.service_role_key" to '<your-service-role-key>';
+   ```
+3. Run migration `0007_pg_cron_daily_checkin.sql` (via `npx supabase db push`
+   or the SQL editor) — it enables `pg_net` and schedules the pg_cron job
+   using the settings from step 2. If either extension isn't available on
+   your plan, or step 2 hasn't been done yet, the migration logs a notice
+   and continues rather than failing outright — check
+   `select * from cron.job;` to confirm the job actually got scheduled.
 
 ## Project layout
 
@@ -156,14 +182,15 @@ api/
   google-callback.ts            Google's OAuth redirect target — exchanges code, stores tokens
   calendar-write.ts             Writes a Google Calendar event (chat confirm-bubble triggered)
   calendar-read.ts              Next 7 days of the user's Google Calendar
-  send-notification.ts          Self-service "send me a test push" (own subscription only)
-  cron/daily-checkin.ts         Vercel Cron target: daily check-in + goal-overdue pushes
+  send-notification.ts          Self-service test push, OR the trusted delivery target the
+                                 Supabase daily-checkin Edge Function calls (CRON_SECRET-gated)
   groq-test.ts                Server-side Groq connectivity check
   _lib/verifyUser.ts          Verifies the caller's Supabase session
   _lib/supabaseServer.ts      RLS-scoped Supabase client (no service-role key, ever)
-  _lib/supabaseAdmin.ts        Service-role client — ONLY google-callback.ts and cron/daily-checkin.ts
+  _lib/supabaseAdmin.ts        Service-role client — ONLY google-callback.ts and send-notification.ts's trusted path
   _lib/googleCalendar.ts       OAuth token exchange/refresh + Calendar API read/write
   _lib/webpush.ts               VAPID-configured web-push wrapper
+  _lib/conversationAnalyzer.ts  Conversation Engine's gpt-oss-20b pre-call + directive builder
   _lib/groq.ts                Groq chat wrapper — primary/fallback/classifier/vision, streaming
   _lib/systemPrompt.ts        Onboarding-only IDENTITY/RULES/BEHAVIOUR blocks (Sprint 1)
 supabase/
@@ -176,9 +203,12 @@ supabase/
   migrations/0005_journal_title.sql           journal_entries.title
   migrations/0006_sprint5_integrations.sql    google_calendar_connections, oauth_states,
                                                notification_log, profiles.push_subscription
+  migrations/0007_pg_cron_daily_checkin.sql   pg_net + pg_cron schedule -> daily-checkin Edge Function
   functions/embed-text/index.ts               gte-small embedding for arbitrary text
   functions/embed-entry/index.ts              Embeds + stores on a specific row's embedding column
   functions/extract-patterns/index.ts         Updates pattern_extractions + typed memories (Groq)
+  functions/daily-checkin/index.ts            pg_cron-invoked: decides who needs a notification,
+                                               personalizes via Groq, delivers via /api/send-notification
 public/
   sw.js                                       Web Push service worker (push + notificationclick)
   fonts/poppins-*.woff2                       Bundled Poppins (SIL OFL) for react-pdf generation
@@ -197,21 +227,32 @@ public/
   key. Almost all server code — Vercel functions and Edge Functions alike —
   acts through the caller's own JWT, so RLS is the real security boundary,
   not an application-level check.
-- **The one exception:** `SUPABASE_SERVICE_ROLE_KEY` (`api/_lib/supabaseAdmin.ts`),
-  used only by two endpoints that have no user session to scope a normal
-  client to, because they aren't user-initiated requests at all:
+- **The one exception:** `SUPABASE_SERVICE_ROLE_KEY`
+  (`api/_lib/supabaseAdmin.ts` on the Vercel side), used only where there's
+  no user session to scope a normal client to, because the request isn't
+  user-initiated at all:
   - `api/google-callback.ts` — Google's OAuth redirect carries no bearer
     token; it resolves which user via a single-use, opaque `state` value
     (`oauth_states`), not by trusting anything the redirect itself claims.
-  - `api/cron/daily-checkin.ts` — a Vercel Cron invocation (see `vercel.json`),
-    authenticated by `CRON_SECRET` rather than a session, that must read
-    across every account to decide who's due for a notification.
+  - `api/send-notification.ts`'s trusted path — called by the Supabase
+    `daily-checkin` Edge Function (itself invoked by pg_cron on schedule,
+    see `supabase/migrations/0007_pg_cron_daily_checkin.sql`), authenticated
+    by `CRON_SECRET` rather than a session.
+  - `supabase/functions/daily-checkin/index.ts` itself — the piece that
+    actually reads across every account to decide who's due for a
+    notification. It uses its own `SUPABASE_SERVICE_ROLE_KEY`, which
+    Supabase auto-injects into every Edge Function's environment, and
+    additionally requires the incoming request's own bearer token to
+    literally equal that same key — stricter than Supabase's default
+    "any valid project JWT" gate, which would otherwise also accept a
+    normal logged-in user's own JWT.
 
-  Both explicitly filter every query by the specific `user_id` they've
-  resolved through their own mechanism above — this client has no RLS
-  safety net, unlike every other Supabase client in this codebase. Nothing
-  in the normal user-facing request path (chat, journal, goals, profile
-  edits, ...) ever uses it.
+  Every one of these explicitly filters (or, for the Edge Function,
+  explicitly authenticates) by the specific identity it's resolved
+  through its own narrow mechanism above — none of these clients have an
+  RLS safety net, unlike every other Supabase client in this codebase.
+  Nothing in the normal user-facing request path (chat, journal, goals,
+  profile edits, ...) ever uses it.
 - `/api/*` functions require a valid Supabase session token before doing
   anything (the two exceptions above aside), so they can't be used as an
   open proxy.

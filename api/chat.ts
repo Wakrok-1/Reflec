@@ -1,7 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { verifyUser } from './_lib/verifyUser'
 import { createUserScopedClient } from './_lib/supabaseServer'
-import { GROQ_PRIMARY_MODEL, parseGroqStreamLine, streamGroq, type GroqMessage } from './_lib/groq'
+import { callGroq, GROQ_PRIMARY_MODEL, parseGroqStreamLine, streamGroq, type GroqMessage } from './_lib/groq'
+import { analyzeConversation, buildConversationDirective } from './_lib/conversationAnalyzer'
 import { getValidAccessToken, listUpcomingEvents } from './_lib/googleCalendar'
 import {
   buildActiveGoalsSummary,
@@ -178,7 +179,75 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         content: `<search_results>\n${body.searchContext}\n</search_results>`,
       })
     }
+
+    // Conversation Engine (PRD 7.0): a fast gpt-oss-20b pre-call decides
+    // what kind of conversational move this response should make, then
+    // that directive is injected as its own system message right before
+    // the actual user/assistant turns.
+    stage = 'analyze_conversation'
+    const analysis = await analyzeConversation(apiKey, body.messages.slice(-8))
+    groqMessages.push({ role: 'system', content: buildConversationDirective(analysis) })
+    if (analysis.multi_message) {
+      groqMessages.push({
+        role: 'system',
+        content: `Respond with ONLY a JSON object: {"messages": [{"text": string, "delay": number}]} — exactly ${analysis.message_count} messages, delays in milliseconds increasing from 0 (e.g. 0, 800, 1600), each a short separate text as if sent one after another like real texts.`,
+      })
+    }
     groqMessages.push(...body.messages)
+
+    if (analysis.multi_message) {
+      stage = 'call_groq_multi_message'
+      let raw: string
+      try {
+        raw = await callGroq(apiKey, {
+          model: GROQ_PRIMARY_MODEL,
+          jsonMode: true,
+          maxTokens: 500,
+          temperature: 0.85,
+          messages: groqMessages,
+        })
+      } catch (err) {
+        console.error('chat failed at stage "call_groq_multi_message"', err)
+        res.status(502).json({ error: 'Groq API request failed', detail: String(err) })
+        return
+      }
+
+      let parsedMessages: { text: string; delay: number }[] = []
+      try {
+        const parsed = JSON.parse(raw) as { messages?: unknown }
+        if (Array.isArray(parsed.messages)) {
+          parsedMessages = parsed.messages
+            .filter(
+              (m): m is { text: string; delay?: unknown } =>
+                !!m && typeof m === 'object' && typeof (m as { text?: unknown }).text === 'string' &&
+                (m as { text: string }).text.trim().length > 0,
+            )
+            .slice(0, 3)
+            .map((m, i) => ({
+              text: m.text.trim(),
+              delay: typeof m.delay === 'number' && Number.isFinite(m.delay) ? m.delay : i * 800,
+            }))
+        }
+      } catch {
+        // Malformed multi-message JSON — fall back to the raw text as one
+        // message rather than failing the whole request over response shape.
+      }
+      if (parsedMessages.length === 0) {
+        parsedMessages = [{ text: raw.trim(), delay: 0 }]
+      }
+
+      stage = 'background_bookkeeping'
+      const assembled = parsedMessages.map((m) => m.text).join('\n\n')
+      await Promise.allSettled([
+        supabase.from('chat_history').insert({ user_id: user.id, role: 'assistant', content: assembled }),
+        supabase.functions.invoke('extract-patterns', {
+          body: { userId: user.id, content: latestUserMessage.content },
+        }),
+      ])
+
+      res.status(200).json({ messages: parsedMessages })
+      return
+    }
 
     stage = 'call_groq_stream'
     let upstream: Response
