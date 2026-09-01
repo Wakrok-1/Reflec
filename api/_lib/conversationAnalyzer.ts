@@ -251,12 +251,12 @@ export async function analyzeConversation(apiKey: string, recentMessages: GroqMe
   try {
     const raw = await callGroq(apiKey, {
       model: GROQ_CLASSIFIER_MODEL,
-      maxTokens: 800,
+      maxTokens: 1000,
       temperature: 0,
       messages: [{ role: 'system', content: ANALYZER_PROMPT }, ...recentMessages],
     })
     // TEMP DEBUG (analyzer truncation investigation) — remove once confirmed.
-    console.log('ANALYZER RAW:', raw)
+    console.log('ANALYZER RAW OUTPUT:', raw)
     const parsed = extractAnalysisJson(raw)
     return enforceRecentQuestionRule(sanitize(parsed), recentMessages)
   } catch (err) {
