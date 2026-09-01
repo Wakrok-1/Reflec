@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { verifyUser } from './_lib/verifyUser'
 import { createUserScopedClient } from './_lib/supabaseServer'
 import { callGroq, GROQ_PRIMARY_MODEL, parseGroqStreamLine, streamGroq, type GroqMessage } from './_lib/groq'
-import { analyzeConversation, buildConversationDirective } from './_lib/conversationAnalyzer'
+import { analyzeConversation, buildConversationDirective, buildMultiMessageInstruction } from './_lib/conversationAnalyzer'
 import { getValidAccessToken, listUpcomingEvents } from './_lib/googleCalendar'
 import {
   buildActiveGoalsSummary,
@@ -195,10 +195,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })
     groqMessages.push({ role: 'system', content: buildConversationDirective(analysis) })
     if (analysis.multi_message) {
-      groqMessages.push({
-        role: 'system',
-        content: `Respond with ONLY a JSON object: {"messages": [{"text": string, "delay": number}]} — exactly ${analysis.message_count} messages, delays in milliseconds increasing from 0 (e.g. 0, 800, 1600), each a short separate text as if sent one after another like real texts.`,
-      })
+      groqMessages.push({ role: 'system', content: buildMultiMessageInstruction(analysis) })
     }
     groqMessages.push(...body.messages)
 

@@ -145,3 +145,11 @@ Past reference: ${analysis.can_reference_past}
 Topic shift allowed: ${analysis.can_change_topic}
 User state: ${analysis.emotion}, ${analysis.energy} energy, advice wanted: ${analysis.advice_wanted}`
 }
+
+// The instruction that tells the main model to reply as a JSON array of
+// separate texts instead of one block, when the analyzer called for it.
+// Pulled out so api/chat.ts and the api/health.ts conversation-debug
+// action build the exact same context, not two copies that can drift.
+export function buildMultiMessageInstruction(analysis: ConversationAnalysis): string {
+  return `Respond with ONLY a JSON object: {"messages": [{"text": string, "delay": number}]} — exactly ${analysis.message_count} messages, delays in milliseconds increasing from 0 (e.g. 0, 800, 1600), each a short separate text as if sent one after another like real texts.`
+}

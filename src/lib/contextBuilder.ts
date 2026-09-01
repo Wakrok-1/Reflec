@@ -14,7 +14,7 @@ const TOTAL_BUDGET = 2000 // + 500-ish for vector hits, whatever remains
 // No tokenizer dependency here — this is a soft relevance/cost budget,
 // not a hard context-window limit (gpt-oss-120b has 131k context), so a
 // ~4-chars-per-token approximation is good enough.
-function estimateTokens(text: string): number {
+export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4)
 }
 
