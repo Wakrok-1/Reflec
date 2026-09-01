@@ -1,31 +1,79 @@
 import { callGroq, GROQ_CLASSIFIER_MODEL, type GroqMessage } from './groq'
 
-// The Conversation Engine's analyzer pre-call (PRD 7.0): a fast gpt-oss-20b
-// pass that decides HOW Your Reflection should respond — not what to say,
-// just the shape of the response — before the main gpt-oss-120b call.
+// The Conversation Engine's analyzer pre-call (PRD v1.6 7.0): a fast
+// gpt-oss-20b pass that decides HOW Your Reflection should respond — not
+// what to say, just the shape of the response — before the main
+// gpt-oss-120b call generates candidates.
 
-export type ConversationalMove = 'REACT' | 'REFLECT' | 'RELATE' | 'CHALLENGE' | 'SHARE' | 'PLAY' | 'EXPLORE' | 'SILENCE'
+export type ConversationalMove =
+  | 'REACT'
+  | 'REFLECT'
+  | 'RELATE'
+  | 'CHALLENGE'
+  | 'SHARE'
+  | 'PLAY'
+  | 'EXPLORE'
+  | 'SILENCE'
+  | 'VALIDATE'
+  | 'CALLBACK'
 export type ResponseLength = 'tiny' | 'short' | 'medium' | 'long'
+export type UserIntent =
+  | 'VENT'
+  | 'STORYTELLING'
+  | 'SEEKING_VALIDATION'
+  | 'SEEKING_ADVICE'
+  | 'CELEBRATING'
+  | 'JOKING'
+  | 'CASUAL_CHAT'
+  | 'REFLECTING'
+  | 'UNCERTAIN'
+export type Stance = 'agree' | 'disagree' | 'neutral' | 'uncertain'
 
-// Trimmed to only the fields the directive actually uses. user_intent,
-// advice_wanted, can_reference_past, and can_change_topic used to be part
-// of this schema, but they widened the JSON object enough that gpt-oss-20b
-// sometimes hit max_tokens before closing the braces — a
-// json_validate_failed error, not a model mistake. The main model can
-// infer intent/advice-wanted/topic-shift from the actual conversation
-// text it already sees; it doesn't need the analyzer to pre-decide those.
+// PRD v1.6's "appraisal layer" upgrade: an emotion label alone ("sad",
+// "anxious") doesn't tell the main model WHY it matters to this person —
+// appraisal, intent, and stance exist so the response can react to the
+// actual stakes instead of the label. recent_move_penalty carries forward
+// what the [CONVERSATION POLICY]'s "track your question usage, don't
+// repeat yourself" guidance already asks for, but computed here instead
+// of left to the main model to notice on its own.
 export interface ConversationAnalysis {
   conversational_move: ConversationalMove
+  intent: UserIntent
+  emotion: string
+  appraisal: string
   question_budget: 0 | 1
   response_length: ResponseLength
   multi_message: boolean
   message_count: number
-  emotion: string
-  energy: 'high' | 'medium' | 'low'
+  recent_move_penalty: string
+  stance: Stance
 }
 
-const MOVES: ConversationalMove[] = ['REACT', 'REFLECT', 'RELATE', 'CHALLENGE', 'SHARE', 'PLAY', 'EXPLORE', 'SILENCE']
+const MOVES: ConversationalMove[] = [
+  'REACT',
+  'REFLECT',
+  'RELATE',
+  'CHALLENGE',
+  'SHARE',
+  'PLAY',
+  'EXPLORE',
+  'SILENCE',
+  'VALIDATE',
+  'CALLBACK',
+]
 const LENGTHS: ResponseLength[] = ['tiny', 'short', 'medium', 'long']
+const INTENTS: UserIntent[] = [
+  'VENT',
+  'STORYTELLING',
+  'SEEKING_VALIDATION',
+  'SEEKING_ADVICE',
+  'CELEBRATING',
+  'JOKING',
+  'CASUAL_CHAT',
+  'REFLECTING',
+  'UNCERTAIN',
+]
+const STANCES: Stance[] = ['agree', 'disagree', 'neutral', 'uncertain']
 
 // Used both when the analyzer call fails outright and as the sanitizer's
 // per-field fallback. question_budget: 0 (not 1) is deliberate — if the
@@ -33,12 +81,15 @@ const LENGTHS: ResponseLength[] = ['tiny', 'short', 'medium', 'long']
 // questionnaire-like behavior this engine exists to prevent.
 const DEFAULT_ANALYSIS: ConversationAnalysis = {
   conversational_move: 'REFLECT',
+  intent: 'UNCERTAIN',
+  emotion: 'neutral',
+  appraisal: 'unknown — analyzer unavailable, do not over-interpret',
   question_budget: 0,
   response_length: 'short',
   multi_message: false,
   message_count: 1,
-  emotion: 'neutral',
-  energy: 'medium',
+  recent_move_penalty: 'none',
+  stance: 'neutral',
 }
 
 const ANALYZER_PROMPT = `You are a fast pre-call that decides HOW Your Reflection (a personal AI
@@ -49,14 +100,27 @@ conversation.
 Respond with ONLY valid JSON matching this exact schema, no markdown, no
 other text:
 {
-  "conversational_move": "REACT" | "REFLECT" | "RELATE" | "CHALLENGE" | "SHARE" | "PLAY" | "EXPLORE" | "SILENCE",
+  "conversational_move": "REACT" | "REFLECT" | "RELATE" | "CHALLENGE" | "SHARE" | "PLAY" | "EXPLORE" | "SILENCE" | "VALIDATE" | "CALLBACK",
+  "intent": "VENT" | "STORYTELLING" | "SEEKING_VALIDATION" | "SEEKING_ADVICE" | "CELEBRATING" | "JOKING" | "CASUAL_CHAT" | "REFLECTING" | "UNCERTAIN",
+  "emotion": "frustrated" | "sad" | "happy" | "anxious" | "neutral" | "excited" | "tired",
+  "appraisal": "string — why this situation matters emotionally, what expectation was violated or threatened",
   "question_budget": 0 | 1,
   "response_length": "tiny" | "short" | "medium" | "long",
   "multi_message": boolean,
   "message_count": 1 | 2 | 3,
-  "emotion": "frustrated" | "sad" | "happy" | "anxious" | "neutral" | "excited" | "tired",
-  "energy": "high" | "medium" | "low"
+  "recent_move_penalty": "string — conversational_move values used in the last 3 assistant turns, so the main model doesn't repeat itself; \\"none\\" if there's no history yet",
+  "stance": "agree" | "disagree" | "neutral" | "uncertain"
 }
+
+Appraisal is the most important field. It is not the emotion label — it's
+WHY the situation matters to this person, what expectation got violated
+or threatened, what's actually at stake. Never invent detail that isn't
+there; when the message is too short or ambiguous to know, say so rather
+than guessing. Examples:
+- "my manager criticised me in front of everyone" -> appraisal: "expected to be seen as competent, public humiliation threatens that"
+- "i feel scared going home" -> appraisal: "home represents threat or judgment, alone feels safer"
+- "tired" -> appraisal: "unknown — don't over-interpret a single word"
+- "I finally finished that project" -> appraisal: "invested significant effort, completion means relief and validation"
 
 Rules:
 - question_budget: 0 when the user is venting, sharing something casual, or questions were already asked in the last few turns.
@@ -64,8 +128,12 @@ Rules:
 - message_count is 1-3, usually 2 when multi_message is true.
 - response_length: "tiny" for casual/passing messages like "im going home tonight".
 - SILENCE means respond with one short statement, no question, no follow-up.
+- VALIDATE: the user needs their experience confirmed as real and reasonable, without clinical language ("your feelings are valid" is banned phrasing, not a VALIDATE move).
+- CALLBACK: bring up something from earlier in the conversation or from memory yourself, unprompted — this is what makes it feel two-way.
+- stance: your own honest read, not a wishy-washy default. Use "neutral"/"uncertain" only when there genuinely isn't a side to take.
+- recent_move_penalty: read the assistant's last 3 turns in the conversation you're given and name which conversational_move each one most likely was, so the same move isn't repeated a fourth time. "none" if there isn't 3 turns of history yet.
 
-Keep the JSON short — this schema has 7 fields, nothing more is needed.`
+Keep the JSON tight — this schema has 10 fields, nothing more is needed.`
 
 function clampMessageCount(value: unknown): number {
   const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
@@ -86,14 +154,21 @@ function sanitize(raw: unknown): ConversationAnalysis {
 
   return {
     conversational_move: move,
+    intent: INTENTS.includes(obj.intent as UserIntent) ? (obj.intent as UserIntent) : DEFAULT_ANALYSIS.intent,
+    emotion: typeof obj.emotion === 'string' && obj.emotion.trim() ? obj.emotion : DEFAULT_ANALYSIS.emotion,
+    appraisal:
+      typeof obj.appraisal === 'string' && obj.appraisal.trim() ? obj.appraisal.trim() : DEFAULT_ANALYSIS.appraisal,
     question_budget: questionBudget,
     response_length: LENGTHS.includes(obj.response_length as ResponseLength)
       ? (obj.response_length as ResponseLength)
       : DEFAULT_ANALYSIS.response_length,
     multi_message: obj.multi_message === true || obj.multi_message === 'true',
     message_count: clampMessageCount(obj.message_count),
-    emotion: typeof obj.emotion === 'string' && obj.emotion.trim() ? obj.emotion : DEFAULT_ANALYSIS.emotion,
-    energy: obj.energy === 'high' || obj.energy === 'medium' || obj.energy === 'low' ? obj.energy : DEFAULT_ANALYSIS.energy,
+    recent_move_penalty:
+      typeof obj.recent_move_penalty === 'string' && obj.recent_move_penalty.trim()
+        ? obj.recent_move_penalty.trim()
+        : DEFAULT_ANALYSIS.recent_move_penalty,
+    stance: STANCES.includes(obj.stance as Stance) ? (obj.stance as Stance) : DEFAULT_ANALYSIS.stance,
   }
 }
 
@@ -114,13 +189,16 @@ function enforceRecentQuestionRule(analysis: ConversationAnalysis, recentMessage
 // safe, moderate default (matching classify-intent.ts's own fail-open
 // pattern) rather than ever blocking the main chat call — a Groq error
 // (rate limit, timeout, or the JSON getting cut off before max_tokens)
-// falls back to DEFAULT_ANALYSIS instead of throwing.
+// falls back to DEFAULT_ANALYSIS instead of throwing. max_tokens is 600
+// (up from the previous 7-field schema's 500) — the appraisal layer added
+// 3 more fields, and appraisal itself is a free-text sentence, so the
+// object needs more headroom to close its braces before truncating.
 export async function analyzeConversation(apiKey: string, recentMessages: GroqMessage[]): Promise<ConversationAnalysis> {
   try {
     const raw = await callGroq(apiKey, {
       model: GROQ_CLASSIFIER_MODEL,
       jsonMode: true,
-      maxTokens: 500,
+      maxTokens: 600,
       temperature: 0,
       messages: [{ role: 'system', content: ANALYZER_PROMPT }, ...recentMessages],
     })
@@ -134,14 +212,18 @@ export async function analyzeConversation(apiKey: string, recentMessages: GroqMe
 
 // "[CONVERSATION DIRECTIVE — follow exactly, overrides general rules for
 // this response]" block, injected as its own system message right before
-// the user's messages (PRD 7.0).
+// the user's messages (PRD 7.0 / v1.6 appraisal layer).
 export function buildConversationDirective(analysis: ConversationAnalysis): string {
   return `[CONVERSATION DIRECTIVE — follow exactly, overrides general rules for this response]
 Move: ${analysis.conversational_move}
 Length: ${analysis.response_length}
 Questions allowed: ${analysis.question_budget} maximum
 Multi-message: ${analysis.multi_message} — if true, return a JSON array of ${analysis.message_count} separate messages
-User state: ${analysis.emotion}, ${analysis.energy} energy`
+Emotion: ${analysis.emotion}
+Appraisal: ${analysis.appraisal}
+Intent: ${analysis.intent}
+Stance: ${analysis.stance}
+Avoid these recent moves: ${analysis.recent_move_penalty}`
 }
 
 // The instruction that tells the main model to reply as a JSON array of

@@ -183,7 +183,8 @@ api/
   preserved as a URL via a `vercel.json` rewrite to `/api/auth`, since
   that path is registered as the redirect_uri in Google Cloud Console and
   changing it there isn't an option this consolidation should force.)
-  chat.ts                     Streaming chat: memory injection, vector search, Groq, calendar
+  chat.ts                     Chat: memory injection, vector search, calendar, Conversation Engine
+                                (analyzer -> 3 candidates -> ranker -> therapy-speak filter, PRD v1.6)
   classify-intent.ts          gpt-oss-20b pre-check: on_topic / off_topic / search_needed / calendar_event
   search.ts                   Tavily search, only called on explicit user confirmation
   journal.ts                   action: reflect | prompt | turn-into-journal | distill-to-snap | vision-extract
@@ -205,9 +206,12 @@ api/
                                 notifications.ts's trusted path
   _lib/googleCalendar.ts       OAuth token exchange/refresh + Calendar API read/write
   _lib/webpush.ts               VAPID-configured web-push wrapper
-  _lib/conversationAnalyzer.ts  Conversation Engine's gpt-oss-20b pre-call + directive builder
+  _lib/conversationAnalyzer.ts  Conversation Engine's gpt-oss-20b pre-call (move/intent/appraisal/
+                                 stance) + directive builder (PRD v1.6 appraisal layer)
+  _lib/responseRanker.ts       3-candidate generation, gpt-oss-20b ranker, therapy-speak filter (PRD v1.6)
   _lib/groq.ts                Groq chat wrapper — primary/fallback/classifier/vision, streaming
-  _lib/systemPrompt.ts        Onboarding-only IDENTITY/RULES/BEHAVIOUR blocks (Sprint 1)
+  _lib/systemPrompt.ts        IDENTITY_BLOCK only — used by onboarding.ts's handleFinalize
+                                extraction call, which isn't a conversational reply
 supabase/
   migrations/0001_init.sql                    Core schema + RLS policies
   migrations/0002_v1_3_memory_upgrade.sql     pgvector, pg_cron, taste_profile,
@@ -219,6 +223,8 @@ supabase/
   migrations/0006_sprint5_integrations.sql    google_calendar_connections, oauth_states,
                                                notification_log, profiles.push_subscription
   migrations/0007_pg_cron_daily_checkin.sql   pg_net + pg_cron schedule -> daily-checkin Edge Function
+  migrations/0008_response_candidates.sql     response_candidates — all 3 chat candidates + ranker
+                                               outcome per turn, write-only, offline review (PRD v1.6)
   functions/embed-text/index.ts               gte-small embedding for arbitrary text
   functions/embed-entry/index.ts              Embeds + stores on a specific row's embedding column
   functions/extract-patterns/index.ts         Updates pattern_extractions + typed memories (Groq)

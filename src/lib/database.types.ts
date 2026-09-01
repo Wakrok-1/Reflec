@@ -250,6 +250,25 @@ export type NotificationLogEntry = {
   sent_at: string
 }
 
+// Conversation Engine v1.6: api/chat.ts generates 3 candidates per turn,
+// ranks them, and runs the winner through a therapy-speak filter before
+// sending it. This table is write-only from the app's perspective — an
+// offline record of what was generated and why one was chosen, not read
+// back into a live response.
+export type ResponseCandidateWinner = 'A' | 'B' | 'C' | 'REGENERATED'
+
+export type ResponseCandidate = {
+  id: string
+  user_id: string
+  message_id: string
+  candidate_a: string
+  candidate_b: string
+  candidate_c: string
+  winner: ResponseCandidateWinner
+  ranker_reason: string | null
+  created_at: string
+}
+
 // supabase-js's generic client requires each table to carry a
 // `Relationships` array and the schema to declare `Views`/`Functions`
 // (see @supabase/postgrest-js's GenericTable/GenericSchema) — otherwise
@@ -322,6 +341,17 @@ export type Database = {
       notification_log: Table<
         NotificationLogEntry,
         Partial<NotificationLogEntry> & { user_id: string; type: NotificationType }
+      >
+      response_candidates: Table<
+        ResponseCandidate,
+        Partial<ResponseCandidate> & {
+          user_id: string
+          message_id: string
+          candidate_a: string
+          candidate_b: string
+          candidate_c: string
+          winner: ResponseCandidateWinner
+        }
       >
     }
     Views: Record<string, never>
