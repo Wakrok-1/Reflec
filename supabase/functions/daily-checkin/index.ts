@@ -3,9 +3,10 @@
 // schedule; see supabase/migrations/0007_pg_cron_daily_checkin.sql).
 // This function decides WHO needs a notification and WHAT it should
 // say; actual delivery happens by calling this app's own
-// /api/send-notification (its trusted, CRON_SECRET-authenticated path),
-// which owns the VAPID/web-push mechanics — kept in Node rather than
-// duplicated here in Deno.
+// /api/notifications (its trusted, CRON_SECRET-authenticated path — the
+// file was api/send-notification.ts before the Vercel Hobby plan's
+// 12-function-limit consolidation), which owns the VAPID/web-push
+// mechanics — kept in Node rather than duplicated here in Deno.
 //
 // Deploy: npx supabase functions deploy daily-checkin
 // Secrets: npx supabase secrets set GROQ_API_KEY=... APP_URL=https://your-app.vercel.app CRON_SECRET=...
@@ -154,7 +155,7 @@ Deno.serve(async (req: Request) => {
     return (data?.length ?? 0) > 0
   }
 
-  // Delivers via this app's own /api/send-notification (trusted path) and
+  // Delivers via this app's own /api/notifications (trusted path) and
   // only logs the send once delivery actually succeeds.
   const send = async (
     userId: string,
@@ -163,7 +164,7 @@ Deno.serve(async (req: Request) => {
     title: string,
     body: string,
   ) => {
-    const response = await fetch(`${appUrl}/api/send-notification`, {
+    const response = await fetch(`${appUrl}/api/notifications`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${cronSecret}` },
       body: JSON.stringify({ userId, title, body }),

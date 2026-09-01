@@ -162,7 +162,7 @@ Suggest 1-3 items. "context" briefly says why it fits them — leave null if the
 
     res.status(200).json(sanitizeBucket(parsed))
   } catch (err) {
-    console.error('goal-suggest failed', err)
+    console.error('goals (suggest) failed', err)
     res.status(500).json({ error: 'Unexpected server error', detail: String(err) })
   }
 }

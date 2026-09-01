@@ -110,7 +110,7 @@ sync, or context injection exists. Charts land in a later sprint.
 
 The daily check-in / goal-reminder sweep runs on Supabase's own pg_cron,
 which invokes a Supabase Edge Function that calls back into this app's
-`/api/send-notification` for actual delivery — not a Vercel Cron job.
+`/api/notifications` for actual delivery — not a Vercel Cron job.
 
 1. Deploy the Edge Function and set its secrets (`CRON_SECRET` must be the
    same value as the Vercel project's `CRON_SECRET` env var):
@@ -175,27 +175,34 @@ src/
       pdf/pdfFonts.ts          Registers bundled Poppins WOFF2 with react-pdf
       pdf/ExportDocument.tsx   Minimal + Editorial style renderers, single-day + timeline layouts
 api/
+  (Vercel Hobby plan caps a project at 12 serverless functions, one per
+  api/*.ts file — api/_lib/* doesn't count, it's plain module resolution,
+  not a route. The list below is the result of consolidating what used to
+  be ~20 single-purpose files down to 10, each dispatching internally on
+  either `req.method` or a `body.action` string. `/api/google-callback` is
+  preserved as a URL via a `vercel.json` rewrite to `/api/auth`, since
+  that path is registered as the redirect_uri in Google Cloud Console and
+  changing it there isn't an option this consolidation should force.)
   chat.ts                     Streaming chat: memory injection, vector search, Groq, calendar
   classify-intent.ts          gpt-oss-20b pre-check: on_topic / off_topic / search_needed / calendar_event
   search.ts                   Tavily search, only called on explicit user confirmation
-  journal-reflect.ts          Optional AI reflection on a full journal entry
-  journal-prompt.ts           AI-generated journal prompt for the export builder's prompt block
-  turn-into-journal.ts        Restructures a day's snaps into one entry — their words only
-  distill-to-snap.ts          Pulls a full entry's one-line essence
-  vision-extract.ts           Apple Journal screenshot OCR via qwen/qwen3.6-27b vision
-  onboarding-chat.ts          One turn of the AI interview (Groq)
-  onboarding-finalize.ts      Extracts profile/taste suggestions (Groq, JSON mode)
-  goal-suggest.ts              AI-suggested goal or bucket-list items (Groq, JSON mode)
-  google-auth-start.ts         Mints oauth_states row, returns the Google consent URL (Sprint 5)
-  google-callback.ts            Google's OAuth redirect target — exchanges code, stores tokens
-  calendar-write.ts             Writes a Google Calendar event (chat confirm-bubble triggered)
-  calendar-read.ts              Next 7 days of the user's Google Calendar
-  send-notification.ts          Self-service test push, OR the trusted delivery target the
+  journal.ts                   action: reflect | prompt | turn-into-journal | distill-to-snap | vision-extract
+                                 (AI journal reflection, export-builder prompt, snaps->entry,
+                                 entry->one-line snap, Apple Journal screenshot OCR via vision)
+  onboarding.ts                 action: chat | finalize — AI interview turn, then profile/taste extraction
+  goals.ts                      AI-suggested goal or bucket-list items (Groq, JSON mode)
+  auth.ts                       GET = Google's OAuth callback target (exchanges code, stores tokens,
+                                 rewritten from /api/google-callback); POST action: google-start =
+                                 mints oauth_states row, returns the Google consent URL
+  calendar.ts                   action: read | write — next 7 days of events, or writes one
+                                 (chat confirm-bubble triggered)
+  notifications.ts               Self-service test push, OR the trusted delivery target the
                                  Supabase daily-checkin Edge Function calls (CRON_SECRET-gated)
-  groq-test.ts                Server-side Groq connectivity check
+  health.ts                    Server-side Groq connectivity check
   _lib/verifyUser.ts          Verifies the caller's Supabase session
   _lib/supabaseServer.ts      RLS-scoped Supabase client (no service-role key, ever)
-  _lib/supabaseAdmin.ts        Service-role client — ONLY google-callback.ts and send-notification.ts's trusted path
+  _lib/supabaseAdmin.ts        Service-role client — ONLY auth.ts's Google callback path and
+                                notifications.ts's trusted path
   _lib/googleCalendar.ts       OAuth token exchange/refresh + Calendar API read/write
   _lib/webpush.ts               VAPID-configured web-push wrapper
   _lib/conversationAnalyzer.ts  Conversation Engine's gpt-oss-20b pre-call + directive builder
@@ -216,7 +223,7 @@ supabase/
   functions/embed-entry/index.ts              Embeds + stores on a specific row's embedding column
   functions/extract-patterns/index.ts         Updates pattern_extractions + typed memories (Groq)
   functions/daily-checkin/index.ts            pg_cron-invoked: decides who needs a notification,
-                                               personalizes via Groq, delivers via /api/send-notification
+                                               personalizes via Groq, delivers via /api/notifications
 public/
   sw.js                                       Web Push service worker (push + notificationclick)
   fonts/poppins-*.woff2                       Bundled Poppins (SIL OFL) for react-pdf generation
@@ -239,10 +246,11 @@ public/
   (`api/_lib/supabaseAdmin.ts` on the Vercel side), used only where there's
   no user session to scope a normal client to, because the request isn't
   user-initiated at all:
-  - `api/google-callback.ts` — Google's OAuth redirect carries no bearer
-    token; it resolves which user via a single-use, opaque `state` value
-    (`oauth_states`), not by trusting anything the redirect itself claims.
-  - `api/send-notification.ts`'s trusted path — called by the Supabase
+  - `api/auth.ts`'s Google callback path — Google's OAuth redirect carries
+    no bearer token; it resolves which user via a single-use, opaque
+    `state` value (`oauth_states`), not by trusting anything the redirect
+    itself claims.
+  - `api/notifications.ts`'s trusted path — called by the Supabase
     `daily-checkin` Edge Function (itself invoked by pg_cron on schedule,
     see `supabase/migrations/0007_pg_cron_daily_checkin.sql`), authenticated
     by `CRON_SECRET` rather than a session.
@@ -268,6 +276,7 @@ public/
   none of them can be called anonymously.
 - Web search is never automatic: `/api/search` only runs when the user taps
   "Search" on the confirm bubble the intent classifier triggers. Calendar
-  writes are the same shape: `/api/calendar-write` only runs after the user
-  taps "Add to calendar" on the confirm bubble the intent classifier's
-  `calendar_event` intent triggers (GUARDRAIL 4) — never automatic.
+  writes are the same shape: `/api/calendar` with `action: 'write'` only
+  runs after the user taps "Add to calendar" on the confirm bubble the
+  intent classifier's `calendar_event` intent triggers (GUARDRAIL 4) — never
+  automatic.

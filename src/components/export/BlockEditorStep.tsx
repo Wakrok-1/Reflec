@@ -334,7 +334,7 @@ function BlockContent({
   useEffect(() => {
     if (block.type === 'journal_prompt' && !block.prompt && !promptFetched.current) {
       promptFetched.current = true
-      callApi<{ prompt: string }>('/api/journal-prompt', {})
+      callApi<{ prompt: string }>('/api/journal', { action: 'prompt' })
         .then(({ prompt }) => onUpdate({ prompt } as Partial<Block>))
         .catch(() => onUpdate({ prompt: 'What has been quietly taking up space in your mind lately?' } as Partial<Block>))
     }

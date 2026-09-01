@@ -35,7 +35,7 @@ create trigger set_updated_at before update on public.google_calendar_connection
 -- for the OAuth authorization-code redirect round trip. Google's
 -- callback request carries no Supabase session (it's a plain browser
 -- redirect from Google's server, no bearer token) — this table is how
--- api/google-callback.ts recovers *which* user just authorized, without
+-- api/auth.ts's Google callback path recovers *which* user just authorized, without
 -- trusting anything the redirect itself claims beyond possession of the
 -- exact opaque `state` value this app minted and handed to Google.
 -- ---------------------------------------------------------------------
@@ -48,8 +48,8 @@ create table public.oauth_states (
 
 alter table public.oauth_states enable row level security;
 
--- Row-owner can insert/read their own pending state (api/google-auth-start.ts
--- runs as the authenticated user). The callback itself has no user JWT at
+-- Row-owner can insert/read their own pending state (api/auth.ts's
+-- google-start action runs as the authenticated user). The callback itself has no user JWT at
 -- all, so it reads/deletes via the service-role client — the one other
 -- narrow exception in this app besides the notification cron, both
 -- documented in api/_lib/supabaseAdmin.ts.

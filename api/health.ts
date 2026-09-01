@@ -3,7 +3,7 @@ import { verifyUser } from './_lib/verifyUser'
 import { callGroq } from './_lib/groq'
 
 // Sprint 0 connectivity check: confirms GROQ_API_KEY is wired up and the
-// model actually responds. Not the real chat endpoint (that's Sprint 2
+// model actually responds. Not the real chat endpoint (that's api/chat.ts
 // with full memory injection) — this just proves the pipe works end to
 // end: browser -> this function -> Groq.
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -41,7 +41,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // client to throw, a network hiccup, etc.) must still come back as
     // JSON — an uncaught throw here becomes Vercel's own plain-text crash
     // page, which breaks every client-side `response.json()` call.
-    console.error('groq-test failed', err)
+    console.error('health failed', err)
     res.status(500).json({ error: 'Unexpected server error', detail: String(err) })
   }
 }

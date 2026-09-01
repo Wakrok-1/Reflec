@@ -41,7 +41,8 @@ export function Onboarding() {
     setSending(true)
     setError(null)
     try {
-      const { reply } = await callApi<{ reply: string }>('/api/onboarding-chat', {
+      const { reply } = await callApi<{ reply: string }>('/api/onboarding', {
+        action: 'chat',
         messages: [HIDDEN_KICKOFF],
       })
       setApiMessages([HIDDEN_KICKOFF, { role: 'assistant', content: reply }])
@@ -66,7 +67,8 @@ export function Onboarding() {
     setMessages((prev) => [...prev, { role: 'user', content: text }])
     scrollToEnd()
     try {
-      const { reply } = await callApi<{ reply: string }>('/api/onboarding-chat', {
+      const { reply } = await callApi<{ reply: string }>('/api/onboarding', {
+        action: 'chat',
         messages: nextApiMessages,
       })
       setApiMessages((prev) => [...prev, { role: 'assistant', content: reply }])
@@ -84,7 +86,8 @@ export function Onboarding() {
     setPhase('finalizing')
     setError(null)
     try {
-      const extraction = await callApi<OnboardingExtraction>('/api/onboarding-finalize', {
+      const extraction = await callApi<OnboardingExtraction>('/api/onboarding', {
+        action: 'finalize',
         messages: apiMessages,
       })
 

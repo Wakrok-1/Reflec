@@ -16,7 +16,7 @@ export function Home() {
     try {
       const { data: sessionData } = await supabase.auth.getSession()
       const token = sessionData.session?.access_token
-      const response = await fetch('/api/groq-test', {
+      const response = await fetch('/api/health', {
         method: 'POST',
         headers: { authorization: `Bearer ${token}` },
       })

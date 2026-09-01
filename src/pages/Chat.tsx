@@ -251,7 +251,8 @@ export function Chat() {
     // to the model, never persisted to chat_history.
     setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: 'user', content: userText, ephemeral: true }])
     try {
-      const { confirmation } = await callApi<{ eventId: string; confirmation: string }>('/api/calendar-write', {
+      const { confirmation } = await callApi<{ eventId: string; confirmation: string }>('/api/calendar', {
+        action: 'write',
         title,
         datetime,
         duration,

@@ -44,8 +44,8 @@ export function ConnectedApps() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user])
 
-  // Picks up ?google=connected|error left by api/google-callback.ts's
-  // redirect, shows a one-time status line, then cleans the URL.
+  // Picks up ?google=connected|error left by api/auth.ts's Google
+  // callback redirect, shows a one-time status line, then cleans the URL.
   useEffect(() => {
     const status = searchParams.get('google')
     if (!status) return
@@ -62,7 +62,7 @@ export function ConnectedApps() {
   const connectGoogle = async () => {
     setConnectingGoogle(true)
     try {
-      const { url } = await callApi<{ url: string }>('/api/google-auth-start', {})
+      const { url } = await callApi<{ url: string }>('/api/auth', { action: 'google-start' })
       window.location.href = url
     } catch {
       setConnectingGoogle(false)

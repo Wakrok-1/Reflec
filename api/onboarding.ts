@@ -1,9 +1,12 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { verifyUser } from './_lib/verifyUser'
 import { callGroq, type GroqMessage } from './_lib/groq'
-import { IDENTITY_BLOCK } from './_lib/systemPrompt'
+import { buildOnboardingSystemPrompt, IDENTITY_BLOCK } from './_lib/systemPrompt'
 
-interface OnboardingFinalizeBody {
+type OnboardingAction = 'chat' | 'finalize'
+
+interface OnboardingRequestBody {
+  action?: OnboardingAction
   messages?: GroqMessage[]
 }
 
@@ -104,62 +107,108 @@ function sanitizeExtraction(raw: unknown): OnboardingExtraction {
   return { profile, taste, summary }
 }
 
+// One turn of the onboarding AI interview (PRD 5.1). Stateless — the
+// client sends the full conversation so far, this returns Your
+// Reflection's next message. No memory injection yet; the interview
+// itself is what Sprint 1 uses to seed memory (see handleFinalize).
+async function handleChat(req: VercelRequest, res: VercelResponse, body: OnboardingRequestBody) {
+  const user = await verifyUser(req.headers.authorization)
+  if (!user) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  const apiKey = process.env.GROQ_API_KEY
+  if (!apiKey) {
+    res.status(500).json({ error: 'GROQ_API_KEY is not configured on the server' })
+    return
+  }
+
+  if (!Array.isArray(body.messages) || body.messages.length === 0) {
+    res.status(400).json({ error: '"messages" must be a non-empty array' })
+    return
+  }
+
+  const reply = await callGroq(apiKey, {
+    maxTokens: 400,
+    temperature: 0.8,
+    messages: [{ role: 'system', content: buildOnboardingSystemPrompt() }, ...body.messages],
+  })
+  res.status(200).json({ reply })
+}
+
 // Runs once, when the user ends the onboarding interview. Extracts
 // structured profile/taste suggestions from the transcript via a Groq
 // JSON-mode call (PRD 7.1: "Pattern extraction — JSON mode enforced").
 // Nothing is written to the database here — the client turns this into
 // approval bubbles on the Character Profile page (PRD 5.1, 7.3).
+async function handleFinalize(req: VercelRequest, res: VercelResponse, body: OnboardingRequestBody) {
+  const user = await verifyUser(req.headers.authorization)
+  if (!user) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+
+  const apiKey = process.env.GROQ_API_KEY
+  if (!apiKey) {
+    res.status(500).json({ error: 'GROQ_API_KEY is not configured on the server' })
+    return
+  }
+
+  if (!Array.isArray(body.messages) || body.messages.length === 0) {
+    res.status(400).json({ error: '"messages" must be a non-empty array' })
+    return
+  }
+
+  const raw = await callGroq(apiKey, {
+    jsonMode: true,
+    maxTokens: 1200,
+    temperature: 0.2,
+    messages: [
+      { role: 'system', content: `${IDENTITY_BLOCK}\n\n${EXTRACTION_SCHEMA_PROMPT}` },
+      ...body.messages,
+      { role: 'user', content: 'Extract the JSON now, following the schema exactly.' },
+    ],
+  })
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    res.status(502).json({ error: 'Groq did not return valid JSON', detail: raw })
+    return
+  }
+
+  res.status(200).json(sanitizeExtraction(parsed))
+}
+
+// Consolidated onboarding endpoint (Vercel Hobby plan's 12-function cap,
+// see README): one turn of the interview and the end-of-interview
+// extraction pass share this file, routed by a body `action` field.
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed' })
     return
   }
 
+  const body = req.body as OnboardingRequestBody
+
   try {
-    const user = await verifyUser(req.headers.authorization)
-    if (!user) {
-      res.status(401).json({ error: 'Unauthorized' })
+    if (body.action === 'finalize') {
+      await handleFinalize(req, res, body)
       return
     }
-
-    const apiKey = process.env.GROQ_API_KEY
-    if (!apiKey) {
-      res.status(500).json({ error: 'GROQ_API_KEY is not configured on the server' })
+    if (body.action === 'chat') {
+      await handleChat(req, res, body)
       return
     }
-
-    const body = req.body as OnboardingFinalizeBody
-    if (!Array.isArray(body.messages) || body.messages.length === 0) {
-      res.status(400).json({ error: '"messages" must be a non-empty array' })
-      return
-    }
-
-    const raw = await callGroq(apiKey, {
-      jsonMode: true,
-      maxTokens: 1200,
-      temperature: 0.2,
-      messages: [
-        { role: 'system', content: `${IDENTITY_BLOCK}\n\n${EXTRACTION_SCHEMA_PROMPT}` },
-        ...body.messages,
-        { role: 'user', content: 'Extract the JSON now, following the schema exactly.' },
-      ],
-    })
-
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(raw)
-    } catch {
-      res.status(502).json({ error: 'Groq did not return valid JSON', detail: raw })
-      return
-    }
-
-    res.status(200).json(sanitizeExtraction(parsed))
+    res.status(400).json({ error: 'Unknown or missing "action"' })
   } catch (err) {
     // Anything unexpected (a bad env var causing verifyUser's Supabase
     // client to throw, a network hiccup, etc.) must still come back as
     // JSON — an uncaught throw here becomes Vercel's own plain-text crash
     // page, which breaks every client-side `response.json()` call.
-    console.error('onboarding-finalize failed', err)
+    console.error(`onboarding (action=${body.action}) failed`, err)
     res.status(500).json({ error: 'Unexpected server error', detail: String(err) })
   }
 }

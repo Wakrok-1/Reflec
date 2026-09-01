@@ -107,7 +107,7 @@ export function Goals() {
     setSuggestingGoal(true)
     try {
       const result = await callApi<{ title: string; description: string | null; increments: string[] }>(
-        '/api/goal-suggest',
+        '/api/goals',
         { kind: 'goal' },
       )
       const suggestion: GoalSuggestion = {
@@ -130,7 +130,7 @@ export function Goals() {
     if (!user) return
     setSuggestingBucket(true)
     try {
-      const result = await callApi<{ items: { item: string; context: string | null }[] }>('/api/goal-suggest', {
+      const result = await callApi<{ items: { item: string; context: string | null }[] }>('/api/goals', {
         kind: 'bucket',
       })
       const dismissed = await fetchDismissedFingerprints(user.id)

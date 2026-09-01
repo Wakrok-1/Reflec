@@ -2,7 +2,7 @@
 -- pg_cron, which invokes the daily-checkin Edge Function
 -- (supabase/functions/daily-checkin) instead of a Vercel Cron trigger
 -- calling a Vercel API route directly. That function decides who's due
--- and calls this app's /api/send-notification for actual delivery.
+-- and calls this app's /api/notifications for actual delivery.
 --
 -- pg_net (needed for the outbound HTTP call to the Edge Function) gets
 -- the same "enable it if the environment allows" treatment pg_cron

@@ -7,11 +7,12 @@ import type { Database } from '../../src/lib/database.types'
 // the real boundary — but two call sites genuinely have no user JWT to
 // scope to, because they aren't user-initiated HTTP requests at all:
 //
-//   1. api/google-callback.ts — Google's OAuth redirect carries no
-//      Supabase session; the only proof of "which user" is possession of
-//      the opaque, single-use `state` value this app minted and handed
-//      to Google (see oauth_states in 0006_sprint5_integrations.sql).
-//   2. api/send-notification.ts's trusted path — called by the Supabase
+//   1. api/auth.ts's Google callback path — Google's OAuth redirect
+//      carries no Supabase session; the only proof of "which user" is
+//      possession of the opaque, single-use `state` value this app
+//      minted and handed to Google (see oauth_states in
+//      0006_sprint5_integrations.sql).
+//   2. api/notifications.ts's trusted path — called by the Supabase
 //      daily-checkin Edge Function (itself invoked by pg_cron, see
 //      0007_pg_cron_daily_checkin.sql), authenticated with CRON_SECRET
 //      rather than a session, to look up an arbitrary user's push

@@ -94,7 +94,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     res.status(200).json({ sent: true })
   } catch (err) {
-    console.error('send-notification failed', err)
+    console.error('notifications (send) failed', err)
     res.status(500).json({ error: 'Unexpected server error', detail: String(err) })
   }
 }

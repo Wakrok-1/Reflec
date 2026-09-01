@@ -154,8 +154,8 @@ export function Journal() {
         setReflecting(true)
         try {
           const { reflection: reflectionText } = await callApi<{ reflection: string | null }>(
-            '/api/journal-reflect',
-            { entryId: entry.id, content },
+            '/api/journal',
+            { action: 'reflect', entryId: entry.id, content },
           )
           setReflection(reflectionText)
           if (reflectionText) await loadEntries()
@@ -177,7 +177,8 @@ export function Journal() {
         reader.onerror = reject
         reader.readAsDataURL(file)
       })
-      const { content, date } = await callApi<{ content: string; date: string | null }>('/api/vision-extract', {
+      const { content, date } = await callApi<{ content: string; date: string | null }>('/api/journal', {
+        action: 'vision-extract',
         imageDataUrl: dataUrl,
       })
       setFullContent((prev) => (prev ? `${prev}\n\n${content}` : content))
@@ -193,7 +194,7 @@ export function Journal() {
     setBusyEntryId(item.id)
     try {
       const sameDaySnapIds = entries.filter((e) => e.kind === 'snap' && e.date === item.date).map((e) => e.id)
-      await callApi('/api/turn-into-journal', { snapIds: sameDaySnapIds })
+      await callApi('/api/journal', { action: 'turn-into-journal', snapIds: sameDaySnapIds })
       await loadEntries()
     } finally {
       setBusyEntryId(null)
@@ -203,7 +204,7 @@ export function Journal() {
   const distillToSnap = async (item: EntryItem) => {
     setBusyEntryId(item.id)
     try {
-      await callApi('/api/distill-to-snap', { entryId: item.id })
+      await callApi('/api/journal', { action: 'distill-to-snap', entryId: item.id })
       await loadEntries()
     } finally {
       setBusyEntryId(null)
