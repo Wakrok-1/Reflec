@@ -118,18 +118,26 @@ which invokes a Supabase Edge Function that calls back into this app's
    npx supabase functions deploy daily-checkin
    npx supabase secrets set GROQ_API_KEY=<your-groq-key> APP_URL=https://<your-app>.vercel.app CRON_SECRET=<your-cron-secret>
    ```
-2. One-time manual step in the Supabase SQL editor (never commit these
-   values — that's why they aren't in the migration itself):
+2. Before applying the migration, edit `0007_pg_cron_daily_checkin.sql` and
+   replace `<YOUR_PROJECT_REF>` with your actual Supabase project ref (the
+   same one in `VITE_SUPABASE_URL`) — that URL isn't a secret, so it's
+   fine to commit directly, unlike the key in the next step.
+3. One-time manual step in the Supabase SQL editor — store the service
+   role key in Vault rather than committing it anywhere:
    ```sql
-   alter database postgres set "app.settings.project_url" to 'https://<your-project-ref>.supabase.co';
-   alter database postgres set "app.settings.service_role_key" to '<your-service-role-key>';
+   select vault.create_secret('<your-service-role-key>', 'daily_checkin_service_role_key');
    ```
-3. Run migration `0007_pg_cron_daily_checkin.sql` (via `npx supabase db push`
-   or the SQL editor) — it enables `pg_net` and schedules the pg_cron job
-   using the settings from step 2. If either extension isn't available on
-   your plan, or step 2 hasn't been done yet, the migration logs a notice
-   and continues rather than failing outright — check
-   `select * from cron.job;` to confirm the job actually got scheduled.
+   (`alter database postgres set "app.settings.*"` — the previous approach
+   here — needs a superuser grant Supabase doesn't give out on shared/
+   free-tier projects; it fails with a permission-denied error there.
+   Vault works on every tier.)
+4. Run migration `0007_pg_cron_daily_checkin.sql` (via `npx supabase db push`
+   or the SQL editor) — it enables `pg_net` and schedules the pg_cron job,
+   pulling the key out of Vault at call time. If `pg_net`/`pg_cron` aren't
+   available on your plan, or the Vault secret from step 3 doesn't exist
+   yet, the migration logs a notice and continues rather than failing
+   outright — check `select * from cron.job;` to confirm the job actually
+   got scheduled.
 
 ## Project layout
 
