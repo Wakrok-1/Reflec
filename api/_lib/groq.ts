@@ -34,6 +34,18 @@ interface CallGroqOptions {
   // reasoning. Groq's `reasoning_format` param is explicitly NOT
   // supported for gpt-oss-20b/120b, so this is the only lever available.
   reasoningEffort?: 'low' | 'medium' | 'high'
+  // callGroq's default behavior on a 429 is to retry once against
+  // GROQ_FALLBACK_MODEL — which is the same model as GROQ_CLASSIFIER_MODEL
+  // (openai/gpt-oss-20b). That's fine for a call site that's the only
+  // caller touching gpt-oss-20b in a given request, but api/chat.ts's main
+  // model call runs in the same request as analyzeConversation's own
+  // gpt-oss-20b call (see the Promise.all in the handler) — if the 120b
+  // call 429s and falls back onto 20b, that fallback lands on a pool this
+  // exact request already spent tokens against moments earlier, which can
+  // itself immediately 429 (an 8,000 TPM ceiling hit twice in one
+  // request). Set true to fail with the original 429 instead of
+  // compounding it on an already-contended pool.
+  disableFallback?: boolean
 }
 
 export class GroqError extends Error {
@@ -96,13 +108,14 @@ async function requestGroq(apiKey: string, model: string, options: CallGroqOptio
 }
 
 // Calls the primary model, and falls back to the smaller/faster model on a
-// 429 (rate limit) as described in the PRD's free-tier cost note.
+// 429 (rate limit) as described in the PRD's free-tier cost note — unless
+// disableFallback opts a call site out (see CallGroqOptions above).
 export async function callGroq(apiKey: string, options: CallGroqOptions) {
   const model = options.model ?? GROQ_PRIMARY_MODEL
   try {
     return await requestGroq(apiKey, model, options)
   } catch (err) {
-    if (err instanceof GroqError && err.status === 429 && model !== GROQ_FALLBACK_MODEL) {
+    if (err instanceof GroqError && err.status === 429 && model !== GROQ_FALLBACK_MODEL && !options.disableFallback) {
       return await requestGroq(apiKey, GROQ_FALLBACK_MODEL, options)
     }
     throw err

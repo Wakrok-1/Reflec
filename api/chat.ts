@@ -217,9 +217,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return
     }
 
-    // TEMP DEBUG (Conversation Engine production verification) — remove once confirmed.
-    console.log('ANALYZER RESULT:', JSON.stringify(analysis))
-
     stage = 'insert_user_message'
     await supabase.from('chat_history').insert({
       user_id: user.id,
@@ -239,8 +236,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const { prompt: systemPrompt } = renderSystemPrompt(bundle)
-    // TEMP DEBUG (Conversation Engine production verification) — remove once confirmed.
-    console.log('SYSTEM PROMPT (first 500 chars):', systemPrompt.slice(0, 500))
 
     const groqMessages: GroqMessage[] = [{ role: 'system', content: systemPrompt }]
     if (body.searchContext) {
@@ -251,9 +246,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const directive = buildConversationDirective(analysis)
-    // TEMP DEBUG (Conversation Engine production verification) — remove once confirmed.
-    console.log('DIRECTIVE:', directive)
-
     groqMessages.push({ role: 'system', content: directive })
     if (analysis.multi_message) {
       groqMessages.push({ role: 'system', content: buildMultiMessageInstruction(analysis) })
@@ -266,6 +258,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 1,000-requests/day cap means this stays at exactly one call here
     // (plus the one analyzer call above), not the three parallel
     // candidates + ranker call an earlier version of this pipeline used.
+    //
+    // disableFallback: true — this request already made one gpt-oss-20b
+    // call (the analyzer, above, in the same Promise.all). If this
+    // gpt-oss-120b call 429s, callGroq's default behavior would retry
+    // against gpt-oss-20b — the same pool the analyzer just drew from —
+    // which can immediately 429 again rather than actually recovering.
+    // Fail with the original 429 instead of compounding it.
     stage = 'call_main_model'
     let raw: string
     try {
@@ -274,6 +273,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         jsonMode: analysis.multi_message,
         maxTokens: responseMaxTokens,
         temperature: 0.85,
+        disableFallback: true,
         messages: groqMessages,
       })
     } catch (err) {
@@ -308,6 +308,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           jsonMode: analysis.multi_message,
           maxTokens: responseMaxTokens,
           temperature: 0.85,
+          disableFallback: true,
           messages: [...groqMessages, { role: 'system', content: TOO_THERAPEUTIC_DIRECTIVE }],
         })
       } catch (err) {

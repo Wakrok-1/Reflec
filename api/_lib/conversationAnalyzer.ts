@@ -260,8 +260,6 @@ export async function analyzeConversation(apiKey: string, recentMessages: GroqMe
       reasoningEffort: 'low',
       messages: [{ role: 'system', content: ANALYZER_PROMPT }, ...recentMessages],
     })
-    // TEMP DEBUG (analyzer truncation investigation) — remove once confirmed.
-    console.log('ANALYZER RAW OUTPUT:', raw)
     const parsed = extractAnalysisJson(raw)
     return enforceRecentQuestionRule(sanitize(parsed), recentMessages)
   } catch (err) {
