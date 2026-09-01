@@ -1,7 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { verifyUser } from './_lib/verifyUser'
+import { createUserScopedClient } from './_lib/supabaseServer'
 import { callGroq, type GroqMessage } from './_lib/groq'
-import { buildOnboardingSystemPrompt, IDENTITY_BLOCK } from './_lib/systemPrompt'
+import { IDENTITY_BLOCK } from './_lib/systemPrompt'
+import { renderSystemPrompt, type MemoryBundle } from '../src/lib/contextBuilder'
+import type { PatternExtraction, Profile } from '../src/lib/database.types'
 
 type OnboardingAction = 'chat' | 'finalize'
 
@@ -109,11 +112,22 @@ function sanitizeExtraction(raw: unknown): OnboardingExtraction {
 
 // One turn of the onboarding AI interview (PRD 5.1). Stateless — the
 // client sends the full conversation so far, this returns Your
-// Reflection's next message. No memory injection yet; the interview
-// itself is what Sprint 1 uses to seed memory (see handleFinalize).
+// Reflection's next message.
+//
+// Uses the SAME unified system prompt as api/chat.ts (src/lib/systemPrompt.ts,
+// rendered via contextBuilder's renderSystemPrompt), not a separate
+// onboarding-only prompt — that prompt's own [ONBOARDING MODE] section
+// already covers "no profile yet" (a profiles row exists from signup via
+// the handle_new_user trigger, just mostly empty pre-onboarding, which
+// renders as "unknown"/"not yet shared" placeholders). A second,
+// unmaintained copy of the identity/rules text here previously meant
+// onboarding never got RULE 8 (no "I hear you" as performance) or the
+// [CONVERSATION POLICY] variety added to the main prompt later — it read
+// as a flat acknowledge-then-question bot. One prompt, one place to edit.
 async function handleChat(req: VercelRequest, res: VercelResponse, body: OnboardingRequestBody) {
+  const accessToken = req.headers.authorization?.replace(/^Bearer\s+/i, '')
   const user = await verifyUser(req.headers.authorization)
-  if (!user) {
+  if (!user || !accessToken) {
     res.status(401).json({ error: 'Unauthorized' })
     return
   }
@@ -129,10 +143,30 @@ async function handleChat(req: VercelRequest, res: VercelResponse, body: Onboard
     return
   }
 
+  const supabase = createUserScopedClient(accessToken)
+  const [{ data: profile, error: profileError }, { data: patterns }] = await Promise.all([
+    supabase.from('profiles').select('*').eq('id', user.id).single(),
+    supabase.from('pattern_extractions').select('*').eq('user_id', user.id).maybeSingle(),
+  ])
+  if (profileError || !profile) {
+    res.status(500).json({ error: 'Could not load user profile' })
+    return
+  }
+
+  const bundle: MemoryBundle = {
+    profile: profile as Profile,
+    patterns: (patterns as PatternExtraction) ?? null,
+    summaries: [],
+    vectorHits: [],
+    activeGoals: [],
+    upcomingEvents: undefined,
+  }
+  const { prompt: systemPrompt } = renderSystemPrompt(bundle)
+
   const reply = await callGroq(apiKey, {
     maxTokens: 400,
     temperature: 0.8,
-    messages: [{ role: 'system', content: buildOnboardingSystemPrompt() }, ...body.messages],
+    messages: [{ role: 'system', content: systemPrompt }, ...body.messages],
   })
   res.status(200).json({ reply })
 }

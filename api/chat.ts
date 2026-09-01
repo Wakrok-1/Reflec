@@ -171,6 +171,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const { prompt: systemPrompt } = renderSystemPrompt(bundle)
+    // TEMP DEBUG (Conversation Engine production verification) — remove once confirmed.
+    console.log('SYSTEM PROMPT (first 500 chars):', systemPrompt.slice(0, 500))
 
     const groqMessages: GroqMessage[] = [{ role: 'system', content: systemPrompt }]
     if (body.searchContext) {
@@ -186,14 +188,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // the actual user/assistant turns.
     stage = 'analyze_conversation'
     const analysis = await analyzeConversation(apiKey, body.messages.slice(-8))
-    // TEMP DEBUG (multi-message rollout) — remove once confirmed working in prod.
-    console.log('conversation analysis', {
-      multi_message: analysis.multi_message,
-      message_count: analysis.message_count,
-      conversational_move: analysis.conversational_move,
-      energy: analysis.energy,
-    })
-    groqMessages.push({ role: 'system', content: buildConversationDirective(analysis) })
+    // TEMP DEBUG (Conversation Engine production verification) — remove once confirmed.
+    console.log('ANALYZER RESULT:', JSON.stringify(analysis))
+
+    const directive = buildConversationDirective(analysis)
+    // TEMP DEBUG (Conversation Engine production verification) — remove once confirmed.
+    console.log('DIRECTIVE:', directive)
+
+    groqMessages.push({ role: 'system', content: directive })
     if (analysis.multi_message) {
       groqMessages.push({ role: 'system', content: buildMultiMessageInstruction(analysis) })
     }
