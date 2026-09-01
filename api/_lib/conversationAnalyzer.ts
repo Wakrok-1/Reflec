@@ -7,35 +7,38 @@ import { callGroq, GROQ_CLASSIFIER_MODEL, type GroqMessage } from './groq'
 export type ConversationalMove = 'REACT' | 'REFLECT' | 'RELATE' | 'CHALLENGE' | 'SHARE' | 'PLAY' | 'EXPLORE' | 'SILENCE'
 export type ResponseLength = 'tiny' | 'short' | 'medium' | 'long'
 
+// Trimmed to only the fields the directive actually uses. user_intent,
+// advice_wanted, can_reference_past, and can_change_topic used to be part
+// of this schema, but they widened the JSON object enough that gpt-oss-20b
+// sometimes hit max_tokens before closing the braces — a
+// json_validate_failed error, not a model mistake. The main model can
+// infer intent/advice-wanted/topic-shift from the actual conversation
+// text it already sees; it doesn't need the analyzer to pre-decide those.
 export interface ConversationAnalysis {
-  user_intent: string
-  emotion: string
-  energy: 'high' | 'medium' | 'low'
-  advice_wanted: boolean
-  question_budget: 0 | 1
   conversational_move: ConversationalMove
+  question_budget: 0 | 1
   response_length: ResponseLength
   multi_message: boolean
   message_count: number
-  can_reference_past: boolean
-  can_change_topic: boolean
+  emotion: string
+  energy: 'high' | 'medium' | 'low'
 }
 
 const MOVES: ConversationalMove[] = ['REACT', 'REFLECT', 'RELATE', 'CHALLENGE', 'SHARE', 'PLAY', 'EXPLORE', 'SILENCE']
 const LENGTHS: ResponseLength[] = ['tiny', 'short', 'medium', 'long']
 
+// Used both when the analyzer call fails outright and as the sanitizer's
+// per-field fallback. question_budget: 0 (not 1) is deliberate — if the
+// analyzer is unavailable, defaulting to "ask a question" is exactly the
+// questionnaire-like behavior this engine exists to prevent.
 const DEFAULT_ANALYSIS: ConversationAnalysis = {
-  user_intent: 'sharing',
-  emotion: 'neutral',
-  energy: 'medium',
-  advice_wanted: false,
-  question_budget: 1,
   conversational_move: 'REFLECT',
+  question_budget: 0,
   response_length: 'short',
   multi_message: false,
   message_count: 1,
-  can_reference_past: true,
-  can_change_topic: true,
+  emotion: 'neutral',
+  energy: 'medium',
 }
 
 const ANALYZER_PROMPT = `You are a fast pre-call that decides HOW Your Reflection (a personal AI
@@ -43,19 +46,16 @@ companion) should respond — not what to say, just the shape of the
 response. Analyze the user's latest message against the recent
 conversation.
 
-Respond with ONLY a JSON object matching this exact schema, no other text:
+Respond with ONLY valid JSON matching this exact schema, no markdown, no
+other text:
 {
-  "user_intent": "venting" | "sharing" | "asking" | "casual" | "reflecting" | "excited" | "processing",
-  "emotion": "frustrated" | "sad" | "happy" | "anxious" | "neutral" | "excited" | "tired",
-  "energy": "high" | "medium" | "low",
-  "advice_wanted": boolean,
-  "question_budget": 0 | 1,
   "conversational_move": "REACT" | "REFLECT" | "RELATE" | "CHALLENGE" | "SHARE" | "PLAY" | "EXPLORE" | "SILENCE",
+  "question_budget": 0 | 1,
   "response_length": "tiny" | "short" | "medium" | "long",
   "multi_message": boolean,
   "message_count": 1 | 2 | 3,
-  "can_reference_past": boolean,
-  "can_change_topic": boolean
+  "emotion": "frustrated" | "sad" | "happy" | "anxious" | "neutral" | "excited" | "tired",
+  "energy": "high" | "medium" | "low"
 }
 
 Rules:
@@ -63,7 +63,9 @@ Rules:
 - multi_message: default to true whenever what you'd say naturally splits into two beats, the way a person actually texts instead of writing one paragraph. This is not limited to REACT or PLAY — REFLECT and RELATE qualify just as often (a reaction then an observation, an observation then a callback). Set it true for: excited or big news, casual back-and-forth, any reply where a natural sentence break exists between two separate thoughts. Only keep it false for a single, indivisible thought — one short reaction, one direct answer, a tiny/passing exchange, or a heavy/serious moment that calls for one held statement instead of being split up.
 - message_count is 1-3, usually 2 when multi_message is true.
 - response_length: "tiny" for casual/passing messages like "im going home tonight".
-- SILENCE means respond with one short statement, no question, no follow-up.`
+- SILENCE means respond with one short statement, no question, no follow-up.
+
+Keep the JSON short — this schema has 7 fields, nothing more is needed.`
 
 function clampMessageCount(value: unknown): number {
   const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
@@ -83,19 +85,15 @@ function sanitize(raw: unknown): ConversationAnalysis {
   const questionBudget = move === 'SILENCE' ? 0 : obj.question_budget === 0 ? 0 : obj.question_budget === 1 ? 1 : 1
 
   return {
-    user_intent: typeof obj.user_intent === 'string' && obj.user_intent.trim() ? obj.user_intent : DEFAULT_ANALYSIS.user_intent,
-    emotion: typeof obj.emotion === 'string' && obj.emotion.trim() ? obj.emotion : DEFAULT_ANALYSIS.emotion,
-    energy: obj.energy === 'high' || obj.energy === 'medium' || obj.energy === 'low' ? obj.energy : DEFAULT_ANALYSIS.energy,
-    advice_wanted: obj.advice_wanted === true,
-    question_budget: questionBudget,
     conversational_move: move,
+    question_budget: questionBudget,
     response_length: LENGTHS.includes(obj.response_length as ResponseLength)
       ? (obj.response_length as ResponseLength)
       : DEFAULT_ANALYSIS.response_length,
     multi_message: obj.multi_message === true || obj.multi_message === 'true',
     message_count: clampMessageCount(obj.message_count),
-    can_reference_past: obj.can_reference_past !== false,
-    can_change_topic: obj.can_change_topic !== false,
+    emotion: typeof obj.emotion === 'string' && obj.emotion.trim() ? obj.emotion : DEFAULT_ANALYSIS.emotion,
+    energy: obj.energy === 'high' || obj.energy === 'medium' || obj.energy === 'low' ? obj.energy : DEFAULT_ANALYSIS.energy,
   }
 }
 
@@ -114,13 +112,15 @@ function enforceRecentQuestionRule(analysis: ConversationAnalysis, recentMessage
 
 // Analyzes the user's latest message and recent context. Fails open to a
 // safe, moderate default (matching classify-intent.ts's own fail-open
-// pattern) rather than ever blocking the main chat call.
+// pattern) rather than ever blocking the main chat call — a Groq error
+// (rate limit, timeout, or the JSON getting cut off before max_tokens)
+// falls back to DEFAULT_ANALYSIS instead of throwing.
 export async function analyzeConversation(apiKey: string, recentMessages: GroqMessage[]): Promise<ConversationAnalysis> {
   try {
     const raw = await callGroq(apiKey, {
       model: GROQ_CLASSIFIER_MODEL,
       jsonMode: true,
-      maxTokens: 250,
+      maxTokens: 500,
       temperature: 0,
       messages: [{ role: 'system', content: ANALYZER_PROMPT }, ...recentMessages],
     })
@@ -141,9 +141,7 @@ Move: ${analysis.conversational_move}
 Length: ${analysis.response_length}
 Questions allowed: ${analysis.question_budget} maximum
 Multi-message: ${analysis.multi_message} — if true, return a JSON array of ${analysis.message_count} separate messages
-Past reference: ${analysis.can_reference_past}
-Topic shift allowed: ${analysis.can_change_topic}
-User state: ${analysis.emotion}, ${analysis.energy} energy, advice wanted: ${analysis.advice_wanted}`
+User state: ${analysis.emotion}, ${analysis.energy} energy`
 }
 
 // The instruction that tells the main model to reply as a JSON array of
