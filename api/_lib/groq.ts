@@ -23,6 +23,17 @@ interface CallGroqOptions {
   maxTokens?: number
   temperature?: number
   jsonMode?: boolean
+  // gpt-oss models (both the 20b classifier and 120b primary) generate a
+  // separate internal chain-of-thought "reasoning" trace before the final
+  // answer, and that reasoning counts against max_tokens — the default
+  // effort ("medium") can burn the whole budget reasoning and leave
+  // message.content completely empty, not truncated, with no error from
+  // Groq at all (a documented gpt-oss behavior, reproduced independently
+  // on other inference backends too). 'low' leaves far more of the
+  // budget for the actual answer on a call that doesn't need deep
+  // reasoning. Groq's `reasoning_format` param is explicitly NOT
+  // supported for gpt-oss-20b/120b, so this is the only lever available.
+  reasoningEffort?: 'low' | 'medium' | 'high'
 }
 
 export class GroqError extends Error {
@@ -48,6 +59,7 @@ async function requestGroq(apiKey: string, model: string, options: CallGroqOptio
       max_tokens: options.maxTokens ?? 512,
       temperature: options.temperature ?? 0.7,
       ...(options.jsonMode ? { response_format: { type: 'json_object' } } : {}),
+      ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
     }),
   })
 
@@ -58,7 +70,12 @@ async function requestGroq(apiKey: string, model: string, options: CallGroqOptio
 
   const data = await response.json()
   const text: string | undefined = data?.choices?.[0]?.message?.content
-  if (typeof text !== 'string') {
+  // Empty (not just non-string) content is the gpt-oss "spent the whole
+  // max_tokens budget reasoning" failure mode described above — Groq
+  // still returns 200 OK with a normal-looking response shape, so this
+  // has to be checked explicitly rather than relying on the !ok branch
+  // above to ever catch it.
+  if (typeof text !== 'string' || text.trim().length === 0) {
     throw new GroqError(502, 'Groq response had no message content')
   }
   return text

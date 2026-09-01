@@ -247,12 +247,23 @@ function enforceRecentQuestionRule(analysis: ConversationAnalysis, recentMessage
 // extractAnalysisJson() below means a truncated or slightly malformed
 // response just fails JSON.parse and falls through to DEFAULT_ANALYSIS,
 // instead of failing the whole Groq request.
+//
+// reasoningEffort: 'low' is the actual fix for the failure mode that
+// showed up after the above: raw coming back completely EMPTY (not
+// truncated JSON) with "Unexpected end of JSON input" / a repair attempt
+// throwing on a bare "}" — because gpt-oss's default ("medium") reasoning
+// effort burns the whole max_tokens budget on its internal
+// chain-of-thought trace before ever reaching the final answer channel,
+// a documented behavior for gpt-oss-20b/120b on Groq (and reproduced
+// independently on other inference backends). This classification task
+// doesn't need deep reasoning, so 'low' leaves the budget for the answer.
 export async function analyzeConversation(apiKey: string, recentMessages: GroqMessage[]): Promise<ConversationAnalysis> {
   try {
     const raw = await callGroq(apiKey, {
       model: GROQ_CLASSIFIER_MODEL,
       maxTokens: 1000,
       temperature: 0,
+      reasoningEffort: 'low',
       messages: [{ role: 'system', content: ANALYZER_PROMPT }, ...recentMessages],
     })
     // TEMP DEBUG (analyzer truncation investigation) — remove once confirmed.
