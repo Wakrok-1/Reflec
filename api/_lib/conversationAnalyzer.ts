@@ -60,13 +60,14 @@ Respond with ONLY a JSON object matching this exact schema, no other text:
 
 Rules:
 - question_budget: 0 when the user is venting, sharing something casual, or questions were already asked in the last few turns.
-- multi_message: true when the move is REACT or PLAY and energy is high, or when a natural break exists in what to say.
-- message_count is 1-3, usually 1-2.
+- multi_message: default to true whenever what you'd say naturally splits into two beats, the way a person actually texts instead of writing one paragraph. This is not limited to REACT or PLAY — REFLECT and RELATE qualify just as often (a reaction then an observation, an observation then a callback). Set it true for: excited or big news, casual back-and-forth, any reply where a natural sentence break exists between two separate thoughts. Only keep it false for a single, indivisible thought — one short reaction, one direct answer, a tiny/passing exchange, or a heavy/serious moment that calls for one held statement instead of being split up.
+- message_count is 1-3, usually 2 when multi_message is true.
 - response_length: "tiny" for casual/passing messages like "im going home tonight".
 - SILENCE means respond with one short statement, no question, no follow-up.`
 
 function clampMessageCount(value: unknown): number {
-  const n = typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : 1
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  const n = Number.isFinite(parsed) ? Math.round(parsed) : 1
   return Math.min(3, Math.max(1, n))
 }
 
@@ -91,7 +92,7 @@ function sanitize(raw: unknown): ConversationAnalysis {
     response_length: LENGTHS.includes(obj.response_length as ResponseLength)
       ? (obj.response_length as ResponseLength)
       : DEFAULT_ANALYSIS.response_length,
-    multi_message: obj.multi_message === true,
+    multi_message: obj.multi_message === true || obj.multi_message === 'true',
     message_count: clampMessageCount(obj.message_count),
     can_reference_past: obj.can_reference_past !== false,
     can_change_topic: obj.can_change_topic !== false,

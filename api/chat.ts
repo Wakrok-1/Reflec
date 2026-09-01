@@ -186,6 +186,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // the actual user/assistant turns.
     stage = 'analyze_conversation'
     const analysis = await analyzeConversation(apiKey, body.messages.slice(-8))
+    // TEMP DEBUG (multi-message rollout) — remove once confirmed working in prod.
+    console.log('conversation analysis', {
+      multi_message: analysis.multi_message,
+      message_count: analysis.message_count,
+      conversational_move: analysis.conversational_move,
+      energy: analysis.energy,
+    })
     groqMessages.push({ role: 'system', content: buildConversationDirective(analysis) })
     if (analysis.multi_message) {
       groqMessages.push({
@@ -212,16 +219,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return
       }
 
+      // TEMP DEBUG (multi-message rollout) — remove once confirmed working in prod.
+      console.log('multi-message raw model output', raw)
+
       let parsedMessages: { text: string; delay: number }[] = []
       try {
-        const parsed = JSON.parse(raw) as { messages?: unknown }
-        if (Array.isArray(parsed.messages)) {
-          parsedMessages = parsed.messages
-            .filter(
-              (m): m is { text: string; delay?: unknown } =>
-                !!m && typeof m === 'object' && typeof (m as { text?: unknown }).text === 'string' &&
-                (m as { text: string }).text.trim().length > 0,
-            )
+        const parsed: unknown = JSON.parse(raw)
+        // Tolerate near-miss shapes: a bare array instead of {"messages": [...]},
+        // or per-item keys the model used instead of "text" (e.g. "message"/"content").
+        const list: unknown = Array.isArray(parsed)
+          ? parsed
+          : (parsed as { messages?: unknown })?.messages
+        if (Array.isArray(list)) {
+          parsedMessages = list
+            .map((m) => {
+              if (typeof m === 'string') return { text: m, delay: undefined as unknown }
+              if (!m || typeof m !== 'object') return null
+              const obj = m as Record<string, unknown>
+              const text = obj.text ?? obj.message ?? obj.content
+              return typeof text === 'string' ? { text, delay: obj.delay } : null
+            })
+            .filter((m): m is { text: string; delay: unknown } => !!m && m.text.trim().length > 0)
             .slice(0, 3)
             .map((m, i) => ({
               text: m.text.trim(),
