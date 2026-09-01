@@ -108,12 +108,12 @@ no markdown fence around it:
   "conversational_move": "REACT" | "REFLECT" | "RELATE" | "CHALLENGE" | "SHARE" | "PLAY" | "EXPLORE" | "SILENCE" | "VALIDATE" | "CALLBACK",
   "intent": "VENT" | "STORYTELLING" | "SEEKING_VALIDATION" | "SEEKING_ADVICE" | "CELEBRATING" | "JOKING" | "CASUAL_CHAT" | "REFLECTING" | "UNCERTAIN",
   "emotion": "frustrated" | "sad" | "happy" | "anxious" | "neutral" | "excited" | "tired",
-  "appraisal": "string — why this situation matters emotionally, what expectation was violated or threatened",
+  "appraisal": "string, 10 WORDS MAXIMUM — why this situation matters emotionally, what expectation was violated or threatened",
   "question_budget": 0 | 1,
   "response_length": "tiny" | "short" | "medium" | "long",
   "multi_message": boolean,
   "message_count": 1 | 2 | 3,
-  "recent_move_penalty": "string — conversational_move values used in the last 3 assistant turns, so the main model doesn't repeat itself; \\"none\\" if there's no history yet",
+  "recent_move_penalty": "string, 5 WORDS MAXIMUM — conversational_move values used in the last 3 assistant turns, so the main model doesn't repeat itself; \\"none\\" if there's no history yet",
   "stance": "agree" | "disagree" | "neutral" | "uncertain"
 }
 </analysis>
@@ -125,11 +125,13 @@ Appraisal is the most important field. It is not the emotion label — it's
 WHY the situation matters to this person, what expectation got violated
 or threatened, what's actually at stake. Never invent detail that isn't
 there; when the message is too short or ambiguous to know, say so rather
-than guessing. Examples:
-- "my manager criticised me in front of everyone" -> appraisal: "expected to be seen as competent, public humiliation threatens that"
-- "i feel scared going home" -> appraisal: "home represents threat or judgment, alone feels safer"
-- "tired" -> appraisal: "unknown — don't over-interpret a single word"
-- "I finally finished that project" -> appraisal: "invested significant effort, completion means relief and validation"
+than guessing. appraisal MUST be 10 words maximum — be extremely
+concise, a fragment, not a sentence. Examples (each already at or under
+the 10-word limit):
+- "my manager criticised me in front of everyone" -> appraisal: "expected to look competent, public humiliation threatens that"
+- "i feel scared going home" -> appraisal: "home means threat or judgment, alone feels safer"
+- "tired" -> appraisal: "unknown, don't over-interpret one word"
+- "I finally finished that project" -> appraisal: "effort paid off, means relief and validation"
 
 Rules:
 - question_budget: 0 when the user is venting, sharing something casual, or questions were already asked in the last few turns.
@@ -140,18 +142,44 @@ Rules:
 - VALIDATE: the user needs their experience confirmed as real and reasonable, without clinical language ("your feelings are valid" is banned phrasing, not a VALIDATE move).
 - CALLBACK: bring up something from earlier in the conversation or from memory yourself, unprompted — this is what makes it feel two-way.
 - stance: your own honest read, not a wishy-washy default. Use "neutral"/"uncertain" only when there genuinely isn't a side to take.
-- recent_move_penalty: read the assistant's last 3 turns in the conversation you're given and name which conversational_move each one most likely was, so the same move isn't repeated a fourth time. "none" if there isn't 3 turns of history yet.
+- recent_move_penalty: read the assistant's last 3 turns in the conversation you're given and name which conversational_move each one most likely was, so the same move isn't repeated a fourth time. "none" if there isn't 3 turns of history yet. MUST be 5 words maximum — move names only (e.g. "REACT, REFLECT" not a sentence about them).
 
-Keep the JSON tight — this schema has 10 fields, nothing more is needed.`
+Keep every field short, especially appraisal (10 words max) and
+recent_move_penalty (5 words max) — this schema has 10 fields, and a
+verbose free-text field is what runs the response past max_tokens
+before the JSON can close.`
 
 // Pulls the JSON object out of the <analysis>...</analysis> tags the
-// prompt asks for. Falls back to treating the whole response as JSON if
-// the model dropped the tags but still emitted a bare object — either
-// way, JSON.parse's own throw is what actually drives the fail-open path
-// in analyzeConversation below, this just decides what to feed it.
+// prompt asks for.
+//
+// A response truncated by max_tokens never gets to emit the closing
+// </analysis> tag at all — so the closing-tag regex won't match, and the
+// content to parse is "everything after <analysis>", not "everything
+// between the two tags". Falling back to the raw string in that case
+// (rather than stripping the opening tag) would just hand JSON.parse a
+// string starting with a literal `<`, which no brace-repair can fix.
+function stripAnalysisTags(raw: string): string {
+  const closed = raw.match(/<analysis>([\s\S]*?)<\/analysis>/i)
+  if (closed) return closed[1].trim()
+  const openOnly = raw.match(/<analysis>([\s\S]*)$/i)
+  return (openOnly ? openOnly[1] : raw).trim()
+}
+
+// Most truncation cases (max_tokens hit mid-generation) cut off after the
+// last field's closing quote, one character short of a valid document —
+// the object is otherwise well-formed, it's just missing its final `}`.
+// Rather than let that fail JSON.parse outright and fall all the way
+// back to DEFAULT_ANALYSIS, try once with a `}` appended before giving
+// up — a cheap repair that recovers the real analysis in the common
+// truncation case instead of discarding it.
 function extractAnalysisJson(raw: string): unknown {
-  const match = raw.match(/<analysis>([\s\S]*?)<\/analysis>/i)
-  return JSON.parse(match ? match[1] : raw)
+  const jsonText = stripAnalysisTags(raw)
+  try {
+    return JSON.parse(jsonText)
+  } catch (err) {
+    if (jsonText.endsWith('}')) throw err
+    return JSON.parse(`${jsonText}}`)
+  }
 }
 
 function clampMessageCount(value: unknown): number {
@@ -223,10 +251,12 @@ export async function analyzeConversation(apiKey: string, recentMessages: GroqMe
   try {
     const raw = await callGroq(apiKey, {
       model: GROQ_CLASSIFIER_MODEL,
-      maxTokens: 600,
+      maxTokens: 800,
       temperature: 0,
       messages: [{ role: 'system', content: ANALYZER_PROMPT }, ...recentMessages],
     })
+    // TEMP DEBUG (analyzer truncation investigation) — remove once confirmed.
+    console.log('ANALYZER RAW:', raw)
     const parsed = extractAnalysisJson(raw)
     return enforceRecentQuestionRule(sanitize(parsed), recentMessages)
   } catch (err) {
