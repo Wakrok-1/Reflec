@@ -69,13 +69,27 @@ async function requestGroq(apiKey: string, model: string, options: CallGroqOptio
   }
 
   const data = await response.json()
-  const text: string | undefined = data?.choices?.[0]?.message?.content
+  const choice = data?.choices?.[0]
+  const text: string | undefined = choice?.message?.content
   // Empty (not just non-string) content is the gpt-oss "spent the whole
   // max_tokens budget reasoning" failure mode described above — Groq
   // still returns 200 OK with a normal-looking response shape, so this
   // has to be checked explicitly rather than relying on the !ok branch
   // above to ever catch it.
   if (typeof text !== 'string' || text.trim().length === 0) {
+    // reasoningEffort: 'low' alone didn't fix this in production — logging
+    // finish_reason/usage/the model's own reasoning field (if Groq sent
+    // one) here, at the actual point of failure, instead of guessing at
+    // another parameter blind. finish_reason "length" + completion_tokens
+    // at the max confirms token exhaustion; a populated `reasoning` field
+    // shows what the model spent the budget on and whether 'low' effort
+    // is actually being honored at all.
+    console.error('Groq returned no message content', {
+      model,
+      finish_reason: choice?.finish_reason,
+      usage: data?.usage,
+      message: choice?.message,
+    })
     throw new GroqError(502, 'Groq response had no message content')
   }
   return text
