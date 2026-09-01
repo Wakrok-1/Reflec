@@ -103,7 +103,7 @@ conversation.
 Respond with ONLY the following — no text before it, no text after it,
 no markdown fence around it:
 
-<analysis>
+<result>
 {
   "conversational_move": "REACT" | "REFLECT" | "RELATE" | "CHALLENGE" | "SHARE" | "PLAY" | "EXPLORE" | "SILENCE" | "VALIDATE" | "CALLBACK",
   "intent": "VENT" | "STORYTELLING" | "SEEKING_VALIDATION" | "SEEKING_ADVICE" | "CELEBRATING" | "JOKING" | "CASUAL_CHAT" | "REFLECTING" | "UNCERTAIN",
@@ -116,9 +116,9 @@ no markdown fence around it:
   "recent_move_penalty": "string, 5 WORDS MAXIMUM — conversational_move values used in the last 3 assistant turns, so the main model doesn't repeat itself; \\"none\\" if there's no history yet",
   "stance": "agree" | "disagree" | "neutral" | "uncertain"
 }
-</analysis>
+</result>
 
-Everything between <analysis> and </analysis> must be that one JSON
+Everything between <result> and </result> must be that one JSON
 object and nothing else.
 
 Appraisal is the most important field. It is not the emotion label — it's
@@ -149,19 +149,35 @@ recent_move_penalty (5 words max) — this schema has 10 fields, and a
 verbose free-text field is what runs the response past max_tokens
 before the JSON can close.`
 
-// Pulls the JSON object out of the <analysis>...</analysis> tags the
-// prompt asks for.
+// Pulls the JSON object out of the <result>...</result> tags the prompt
+// asks for.
+//
+// This tag is deliberately NOT called <analysis>. gpt-oss models are
+// trained on OpenAI's "Harmony" response format, which has exactly three
+// reserved channels: analysis (hidden chain-of-thought), commentary (tool
+// calls), and final (the user-facing answer) — see
+// https://developers.openai.com/cookbook/articles/openai-harmony. Asking
+// for output inside <analysis> tags collided with that trained
+// vocabulary: production logs showed finish_reason "stop" (not "length")
+// with completion_tokens well under max_tokens, yet message.content
+// empty — the model was routing its answer into the internal analysis/
+// reasoning channel, which Groq doesn't expose in message.content for
+// this model (reasoning_format isn't supported for gpt-oss-20b/120b), so
+// the whole reply vanished with no error. Every earlier fix in this file
+// (bigger max_tokens, brace repair, reasoning_effort: 'low') was chasing
+// token-budget symptoms of a problem that was actually a channel-naming
+// collision.
 //
 // A response truncated by max_tokens never gets to emit the closing
-// </analysis> tag at all — so the closing-tag regex won't match, and the
-// content to parse is "everything after <analysis>", not "everything
+// </result> tag at all — so the closing-tag regex won't match, and the
+// content to parse is "everything after <result>", not "everything
 // between the two tags". Falling back to the raw string in that case
 // (rather than stripping the opening tag) would just hand JSON.parse a
 // string starting with a literal `<`, which no brace-repair can fix.
-function stripAnalysisTags(raw: string): string {
-  const closed = raw.match(/<analysis>([\s\S]*?)<\/analysis>/i)
+function stripResultTags(raw: string): string {
+  const closed = raw.match(/<result>([\s\S]*?)<\/result>/i)
   if (closed) return closed[1].trim()
-  const openOnly = raw.match(/<analysis>([\s\S]*)$/i)
+  const openOnly = raw.match(/<result>([\s\S]*)$/i)
   return (openOnly ? openOnly[1] : raw).trim()
 }
 
@@ -173,7 +189,7 @@ function stripAnalysisTags(raw: string): string {
 // up — a cheap repair that recovers the real analysis in the common
 // truncation case instead of discarding it.
 function extractAnalysisJson(raw: string): unknown {
-  const jsonText = stripAnalysisTags(raw)
+  const jsonText = stripResultTags(raw)
   try {
     return JSON.parse(jsonText)
   } catch (err) {
@@ -243,20 +259,17 @@ function enforceRecentQuestionRule(analysis: ConversationAnalysis, recentMessage
 // appraisal sentence) ran the constrained decoder past max_tokens before
 // it could close its braces, which is a hard 400 from Groq itself, not
 // something try/catch here ever got a chance to handle gracefully.
-// Free-form generation into <analysis> tags plus our own tolerant
+// Free-form generation into <result> tags plus our own tolerant
 // extractAnalysisJson() below means a truncated or slightly malformed
 // response just fails JSON.parse and falls through to DEFAULT_ANALYSIS,
-// instead of failing the whole Groq request.
+// instead of failing the whole Groq request. (The tag really is <result>,
+// not <analysis> — see stripResultTags() above for why that distinction
+// turned out to matter a lot more than it looks like it should.)
 //
-// reasoningEffort: 'low' is the actual fix for the failure mode that
-// showed up after the above: raw coming back completely EMPTY (not
-// truncated JSON) with "Unexpected end of JSON input" / a repair attempt
-// throwing on a bare "}" — because gpt-oss's default ("medium") reasoning
-// effort burns the whole max_tokens budget on its internal
-// chain-of-thought trace before ever reaching the final answer channel,
-// a documented behavior for gpt-oss-20b/120b on Groq (and reproduced
-// independently on other inference backends). This classification task
-// doesn't need deep reasoning, so 'low' leaves the budget for the answer.
+// reasoningEffort: 'low' is a smaller, secondary improvement — a fast
+// classification pre-call has no need for gpt-oss's default ("medium")
+// depth of internal chain-of-thought, so this leaves more of the token
+// budget for the actual answer regardless of which channel it lands in.
 export async function analyzeConversation(apiKey: string, recentMessages: GroqMessage[]): Promise<ConversationAnalysis> {
   try {
     const raw = await callGroq(apiKey, {
