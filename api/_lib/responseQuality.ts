@@ -80,3 +80,21 @@ export function scoreTherapySpeak(text: string): number {
   const lower = text.toLowerCase()
   return THERAPY_SPEAK_RULES.reduce((score, rule) => score + (rule.test(lower) ? rule.points : 0), 0)
 }
+
+// "Starts with I hear" was only worth 3 points in the scoring rules above
+// — under THERAPY_SPEAK_THRESHOLD (4) on its own — so a response that
+// opens with "I hear that..."/"I hear you..." and nothing else on the
+// list would pass the filter untouched. This is the actual fix: an
+// automatic reject for "I hear" (and "I can hear"/"I'm hearing") that
+// bypasses the point system entirely, checked only in the opening 6
+// words so it catches how the model actually opens a response without
+// flagging the phrase if it shows up naturally deeper in a reply. Word
+// boundaries (\b) matter here — without them "i hear" would also match
+// inside "i heard", which is a different, unrelated word.
+const AUTO_REJECT_OPENING_WORD_COUNT = 6
+const AUTO_REJECT_PATTERNS: RegExp[] = [/\bi\s+hear\b/i, /\bi\s+can\s+hear\b/i, /\bi'?m\s+hearing\b/i]
+
+export function isAutoRejectedTherapySpeak(text: string): boolean {
+  const openingWords = text.trim().split(/\s+/).slice(0, AUTO_REJECT_OPENING_WORD_COUNT).join(' ')
+  return AUTO_REJECT_PATTERNS.some((pattern) => pattern.test(openingWords))
+}

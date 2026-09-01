@@ -3,7 +3,13 @@ import { verifyUser } from './_lib/verifyUser'
 import { createUserScopedClient } from './_lib/supabaseServer'
 import { callGroq, GROQ_PRIMARY_MODEL, type GroqMessage } from './_lib/groq'
 import { analyzeConversation, buildConversationDirective, buildMultiMessageInstruction } from './_lib/conversationAnalyzer'
-import { parseMultiMessageJson, extractPlainText, scoreTherapySpeak, THERAPY_SPEAK_THRESHOLD } from './_lib/responseQuality'
+import {
+  parseMultiMessageJson,
+  extractPlainText,
+  scoreTherapySpeak,
+  isAutoRejectedTherapySpeak,
+  THERAPY_SPEAK_THRESHOLD,
+} from './_lib/responseQuality'
 import { getValidAccessToken, listUpcomingEvents } from './_lib/googleCalendar'
 import {
   buildActiveGoalsSummary,
@@ -277,18 +283,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Therapy-speak post-filter (PRD v1.6): plain string scoring, no
-    // extra Groq call. Only on a score >= THERAPY_SPEAK_THRESHOLD does
-    // this spend a second main-model call regenerating — the common case
-    // is one call in, one response out.
+    // extra Groq call. A response regenerates once if either its point
+    // score hits THERAPY_SPEAK_THRESHOLD, OR it opens with "I hear"/"I
+    // can hear"/"I'm hearing" — that opener is an automatic reject that
+    // bypasses the point system entirely, since at only 3 points it
+    // wasn't enough on its own to cross the 4-point threshold and kept
+    // slipping through in production. The common case is still one call
+    // in, one response out.
     stage = 'therapy_speak_filter'
     let finalRaw = raw
     let finalPlain = extractPlainText(raw, analysis.multi_message)
     let therapySpeakScore = scoreTherapySpeak(finalPlain)
+    let autoRejected = isAutoRejectedTherapySpeak(finalPlain)
     let regenerated = false
 
-    if (therapySpeakScore >= THERAPY_SPEAK_THRESHOLD) {
-      console.error('chat: response scored >= therapy-speak threshold, regenerating once', {
+    if (therapySpeakScore >= THERAPY_SPEAK_THRESHOLD || autoRejected) {
+      console.error('chat: response failed therapy-speak filter, regenerating once', {
         score: therapySpeakScore,
+        autoRejected,
       })
       try {
         finalRaw = await callGroq(apiKey, {
@@ -305,10 +317,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       finalPlain = extractPlainText(finalRaw, analysis.multi_message)
       therapySpeakScore = scoreTherapySpeak(finalPlain)
+      autoRejected = isAutoRejectedTherapySpeak(finalPlain)
       regenerated = true
-      if (therapySpeakScore >= THERAPY_SPEAK_THRESHOLD) {
-        console.error('chat: regenerated response also scored >= therapy-speak threshold', {
+      if (therapySpeakScore >= THERAPY_SPEAK_THRESHOLD || autoRejected) {
+        console.error('chat: regenerated response also failed the therapy-speak filter', {
           score: therapySpeakScore,
+          autoRejected,
         })
       }
     }
