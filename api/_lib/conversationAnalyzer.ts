@@ -2,8 +2,11 @@ import { callGroq, GROQ_CLASSIFIER_MODEL, type GroqMessage } from './groq'
 
 // The Conversation Engine's analyzer pre-call (PRD v1.6 7.0): a fast
 // gpt-oss-20b pass that decides HOW Your Reflection should respond — not
-// what to say, just the shape of the response — before the main
-// gpt-oss-120b call generates candidates.
+// what to say, just the shape of the response — before the single main
+// gpt-oss-120b call. Exactly one analyzer call + one main-model call per
+// message (occasionally a second main-model call if the therapy-speak
+// filter rejects the first) — the Groq free tier's request-per-day cap
+// is the reason this stays at 2 calls, not 6.
 
 export type ConversationalMove =
   | 'REACT'
@@ -97,8 +100,10 @@ companion) should respond — not what to say, just the shape of the
 response. Analyze the user's latest message against the recent
 conversation.
 
-Respond with ONLY valid JSON matching this exact schema, no markdown, no
-other text:
+Respond with ONLY the following — no text before it, no text after it,
+no markdown fence around it:
+
+<analysis>
 {
   "conversational_move": "REACT" | "REFLECT" | "RELATE" | "CHALLENGE" | "SHARE" | "PLAY" | "EXPLORE" | "SILENCE" | "VALIDATE" | "CALLBACK",
   "intent": "VENT" | "STORYTELLING" | "SEEKING_VALIDATION" | "SEEKING_ADVICE" | "CELEBRATING" | "JOKING" | "CASUAL_CHAT" | "REFLECTING" | "UNCERTAIN",
@@ -111,6 +116,10 @@ other text:
   "recent_move_penalty": "string — conversational_move values used in the last 3 assistant turns, so the main model doesn't repeat itself; \\"none\\" if there's no history yet",
   "stance": "agree" | "disagree" | "neutral" | "uncertain"
 }
+</analysis>
+
+Everything between <analysis> and </analysis> must be that one JSON
+object and nothing else.
 
 Appraisal is the most important field. It is not the emotion label — it's
 WHY the situation matters to this person, what expectation got violated
@@ -134,6 +143,16 @@ Rules:
 - recent_move_penalty: read the assistant's last 3 turns in the conversation you're given and name which conversational_move each one most likely was, so the same move isn't repeated a fourth time. "none" if there isn't 3 turns of history yet.
 
 Keep the JSON tight — this schema has 10 fields, nothing more is needed.`
+
+// Pulls the JSON object out of the <analysis>...</analysis> tags the
+// prompt asks for. Falls back to treating the whole response as JSON if
+// the model dropped the tags but still emitted a bare object — either
+// way, JSON.parse's own throw is what actually drives the fail-open path
+// in analyzeConversation below, this just decides what to feed it.
+function extractAnalysisJson(raw: string): unknown {
+  const match = raw.match(/<analysis>([\s\S]*?)<\/analysis>/i)
+  return JSON.parse(match ? match[1] : raw)
+}
 
 function clampMessageCount(value: unknown): number {
   const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
@@ -187,22 +206,28 @@ function enforceRecentQuestionRule(analysis: ConversationAnalysis, recentMessage
 
 // Analyzes the user's latest message and recent context. Fails open to a
 // safe, moderate default (matching classify-intent.ts's own fail-open
-// pattern) rather than ever blocking the main chat call — a Groq error
-// (rate limit, timeout, or the JSON getting cut off before max_tokens)
-// falls back to DEFAULT_ANALYSIS instead of throwing. max_tokens is 600
-// (up from the previous 7-field schema's 500) — the appraisal layer added
-// 3 more fields, and appraisal itself is a free-text sentence, so the
-// object needs more headroom to close its braces before truncating.
+// pattern) rather than ever blocking the main chat call.
+//
+// Deliberately NOT using jsonMode/response_format: json_object here —
+// Groq's grammar-constrained JSON mode was throwing
+// json_validate_failed: max completion tokens reached before generating
+// a valid document whenever the 10-field schema (with a free-text
+// appraisal sentence) ran the constrained decoder past max_tokens before
+// it could close its braces, which is a hard 400 from Groq itself, not
+// something try/catch here ever got a chance to handle gracefully.
+// Free-form generation into <analysis> tags plus our own tolerant
+// extractAnalysisJson() below means a truncated or slightly malformed
+// response just fails JSON.parse and falls through to DEFAULT_ANALYSIS,
+// instead of failing the whole Groq request.
 export async function analyzeConversation(apiKey: string, recentMessages: GroqMessage[]): Promise<ConversationAnalysis> {
   try {
     const raw = await callGroq(apiKey, {
       model: GROQ_CLASSIFIER_MODEL,
-      jsonMode: true,
       maxTokens: 600,
       temperature: 0,
       messages: [{ role: 'system', content: ANALYZER_PROMPT }, ...recentMessages],
     })
-    const parsed = JSON.parse(raw)
+    const parsed = extractAnalysisJson(raw)
     return enforceRecentQuestionRule(sanitize(parsed), recentMessages)
   } catch (err) {
     console.error('conversation analyzer failed, falling back to default analysis', err)

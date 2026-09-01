@@ -184,7 +184,9 @@ api/
   that path is registered as the redirect_uri in Google Cloud Console and
   changing it there isn't an option this consolidation should force.)
   chat.ts                     Chat: memory injection, vector search, calendar, Conversation Engine
-                                (analyzer -> 3 candidates -> ranker -> therapy-speak filter, PRD v1.6)
+                                (analyzer -> single main-model call -> therapy-speak filter, PRD v1.6 —
+                                exactly 2 Groq calls/message, 3 if the filter triggers a regeneration,
+                                to stay well under the Groq free tier's 1,000 requests/day)
   classify-intent.ts          gpt-oss-20b pre-check: on_topic / off_topic / search_needed / calendar_event
   search.ts                   Tavily search, only called on explicit user confirmation
   journal.ts                   action: reflect | prompt | turn-into-journal | distill-to-snap | vision-extract
@@ -207,8 +209,11 @@ api/
   _lib/googleCalendar.ts       OAuth token exchange/refresh + Calendar API read/write
   _lib/webpush.ts               VAPID-configured web-push wrapper
   _lib/conversationAnalyzer.ts  Conversation Engine's gpt-oss-20b pre-call (move/intent/appraisal/
-                                 stance) + directive builder (PRD v1.6 appraisal layer)
-  _lib/responseRanker.ts       3-candidate generation, gpt-oss-20b ranker, therapy-speak filter (PRD v1.6)
+                                 stance) + directive builder — <analysis> XML tags, not Groq's
+                                 response_format: json_object, which was hitting
+                                 json_validate_failed on this schema's size (PRD v1.6)
+  _lib/responseQuality.ts      Multi-message JSON parsing + therapy-speak string scoring
+                                 (no API call) for the single main-model response (PRD v1.6)
   _lib/groq.ts                Groq chat wrapper — primary/fallback/classifier/vision, streaming
   _lib/systemPrompt.ts        IDENTITY_BLOCK only — used by onboarding.ts's handleFinalize
                                 extraction call, which isn't a conversational reply
@@ -223,8 +228,9 @@ supabase/
   migrations/0006_sprint5_integrations.sql    google_calendar_connections, oauth_states,
                                                notification_log, profiles.push_subscription
   migrations/0007_pg_cron_daily_checkin.sql   pg_net + pg_cron schedule -> daily-checkin Edge Function
-  migrations/0008_response_candidates.sql     response_candidates — all 3 chat candidates + ranker
-                                               outcome per turn, write-only, offline review (PRD v1.6)
+  migrations/0008_response_quality_log.sql    response_quality_log — the response actually sent,
+                                               its therapy-speak score, and whether it needed a
+                                               regeneration; write-only, fine-tuning-dataset signal (PRD v1.6)
   functions/embed-text/index.ts               gte-small embedding for arbitrary text
   functions/embed-entry/index.ts              Embeds + stores on a specific row's embedding column
   functions/extract-patterns/index.ts         Updates pattern_extractions + typed memories (Groq)

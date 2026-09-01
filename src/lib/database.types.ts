@@ -250,22 +250,17 @@ export type NotificationLogEntry = {
   sent_at: string
 }
 
-// Conversation Engine v1.6: api/chat.ts generates 3 candidates per turn,
-// ranks them, and runs the winner through a therapy-speak filter before
-// sending it. This table is write-only from the app's perspective — an
-// offline record of what was generated and why one was chosen, not read
+// Conversation Engine v1.6: api/chat.ts generates one main-model response
+// per turn and runs it through a string-based therapy-speak filter. This
+// table logs the outcome as a lightweight preference signal for a future
+// fine-tuning dataset — write-only from the app's perspective, never read
 // back into a live response.
-export type ResponseCandidateWinner = 'A' | 'B' | 'C' | 'REGENERATED'
-
-export type ResponseCandidate = {
+export type ResponseQualityLog = {
   id: string
   user_id: string
-  message_id: string
-  candidate_a: string
-  candidate_b: string
-  candidate_c: string
-  winner: ResponseCandidateWinner
-  ranker_reason: string | null
+  response_text: string
+  therapy_speak_score: number
+  regenerated: boolean
   created_at: string
 }
 
@@ -342,16 +337,9 @@ export type Database = {
         NotificationLogEntry,
         Partial<NotificationLogEntry> & { user_id: string; type: NotificationType }
       >
-      response_candidates: Table<
-        ResponseCandidate,
-        Partial<ResponseCandidate> & {
-          user_id: string
-          message_id: string
-          candidate_a: string
-          candidate_b: string
-          candidate_c: string
-          winner: ResponseCandidateWinner
-        }
+      response_quality_log: Table<
+        ResponseQualityLog,
+        Partial<ResponseQualityLog> & { user_id: string; response_text: string }
       >
     }
     Views: Record<string, never>

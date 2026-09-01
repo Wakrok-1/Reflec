@@ -3,17 +3,7 @@ import { verifyUser } from './_lib/verifyUser'
 import { createUserScopedClient } from './_lib/supabaseServer'
 import { callGroq, GROQ_PRIMARY_MODEL, type GroqMessage } from './_lib/groq'
 import { analyzeConversation, buildConversationDirective, buildMultiMessageInstruction } from './_lib/conversationAnalyzer'
-import {
-  generateCandidates,
-  rankCandidates,
-  scoreTherapySpeak,
-  extractPlainText,
-  parseMultiMessageJson,
-  THERAPY_SPEAK_THRESHOLD,
-  CANDIDATE_LETTERS,
-  type CandidateLetter,
-  type CandidateSet,
-} from './_lib/responseRanker'
+import { parseMultiMessageJson, extractPlainText, scoreTherapySpeak, THERAPY_SPEAK_THRESHOLD } from './_lib/responseQuality'
 import { getValidAccessToken, listUpcomingEvents } from './_lib/googleCalendar'
 import {
   buildActiveGoalsSummary,
@@ -23,7 +13,7 @@ import {
   type UpcomingCalendarEvent,
   type VectorHit,
 } from '../src/lib/contextBuilder'
-import type { PatternExtraction, Profile, MemorySummary, ResponseCandidateWinner } from '../src/lib/database.types'
+import type { PatternExtraction, Profile, MemorySummary } from '../src/lib/database.types'
 
 interface ChatRequestBody {
   messages?: GroqMessage[]
@@ -49,10 +39,11 @@ interface MemoryContextResult {
   activeGoals: ActiveGoalSummary[]
 }
 
-// One of the Conversation Engine v1.6 pre-model calls run in parallel
-// (see the Promise.all in the handler below) — profile, patterns,
-// summaries, and goals are four independent Supabase queries, so they're
-// further parallelized against each other here too.
+// One of the Conversation Engine's pre-model calls run in parallel (see
+// the Promise.all in the handler below) — profile, patterns, summaries,
+// and goals are four independent Supabase queries, so they're further
+// parallelized against each other here too. Pure Supabase reads, no Groq
+// calls, so none of this counts against the Groq free-tier rate limit.
 async function fetchMemoryContext(supabase: ScopedSupabase, userId: string): Promise<MemoryContextResult> {
   const [{ data: profile, error: profileError }, { data: patterns }, { data: summaries }, { data: goalRows }] =
     await Promise.all([
@@ -101,6 +92,8 @@ interface VectorSearchResult {
 // Embeds the new message once, up front: this exact embedding is both
 // (a) the query vector for this request's semantic search, and (b) what
 // gets stored on the chat_history row — no reason to compute it twice.
+// The embed-text call is a Supabase Edge Function invocation, not a Groq
+// call, so it's safe to run alongside the other pre-model branches too.
 async function runVectorSearch(
   supabase: ScopedSupabase,
   userId: string,
@@ -145,17 +138,6 @@ async function runVectorSearch(
   ]
   const vectorHits = combined.sort((a, b) => b.similarity - a.similarity).slice(0, VECTOR_HITS_TOTAL)
   return { embedding, vectorHits }
-}
-
-// Runs the therapy-speak filter over the ranker's winner, then the other
-// two candidates in order, returning the first that scores under
-// THERAPY_SPEAK_THRESHOLD. `null` means all three failed the filter.
-function pickBestUnderThreshold(winner: CandidateLetter, plainTexts: CandidateSet): CandidateLetter | null {
-  const order: CandidateLetter[] = [winner, ...CANDIDATE_LETTERS.filter((letter) => letter !== winner)]
-  for (const letter of order) {
-    if (scoreTherapySpeak(plainTexts[letter]) < THERAPY_SPEAK_THRESHOLD) return letter
-  }
-  return null
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -206,11 +188,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     stage = 'create_scoped_client'
     const supabase = createUserScopedClient(accessToken)
 
-    // Conversation Engine v1.6: the analyzer pre-call, the memory/context
-    // fetch, the vector search, and the calendar fetch have no dependency
-    // on one another, so they run genuinely concurrently — each async
-    // function below is invoked (starting it immediately) directly inside
-    // the array literal, not awaited one at a time beforehand.
+    // The analyzer (1 Groq call), memory/context fetch, vector search,
+    // and calendar fetch have no dependency on one another, so they run
+    // genuinely concurrently — each async function below is invoked
+    // (starting it immediately) directly inside the array literal, not
+    // awaited one at a time beforehand. Running the analyzer inside this
+    // same Promise.all doesn't add any Groq calls beyond the one it was
+    // always going to make; only the memory/vector/calendar branches are
+    // "free" to parallelize in the rate-limit sense, since those are
+    // Supabase calls.
     stage = 'parallel_pre_model'
     const [analysis, memoryContext, upcomingEvents, vectorSearchResult] = await Promise.all([
       analyzeConversation(apiKey, body.messages.slice(-8)),
@@ -229,17 +215,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log('ANALYZER RESULT:', JSON.stringify(analysis))
 
     stage = 'insert_user_message'
-    const { data: insertedMessage } = await supabase
-      .from('chat_history')
-      .insert({
-        user_id: user.id,
-        role: 'user',
-        content: latestUserMessage.content,
-        embedding: vectorSearchResult.embedding,
-      })
-      .select('id')
-      .single()
-    const userMessageId: string | null = insertedMessage?.id ?? null
+    await supabase.from('chat_history').insert({
+      user_id: user.id,
+      role: 'user',
+      content: latestUserMessage.content,
+      embedding: vectorSearchResult.embedding,
+    })
 
     stage = 'build_system_prompt'
     const bundle: MemoryBundle = {
@@ -273,49 +254,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     groqMessages.push(...body.messages)
 
-    const candidateMaxTokens = analysis.multi_message ? 500 : 800
+    const responseMaxTokens = analysis.multi_message ? 500 : 800
 
-    stage = 'generate_candidates'
-    let candidates: CandidateSet
+    // Single main-model call (PRD v1.6, revised) — the Groq free tier's
+    // 1,000-requests/day cap means this stays at exactly one call here
+    // (plus the one analyzer call above), not the three parallel
+    // candidates + ranker call an earlier version of this pipeline used.
+    stage = 'call_main_model'
+    let raw: string
     try {
-      candidates = await generateCandidates(apiKey, groqMessages, analysis.multi_message, candidateMaxTokens)
+      raw = await callGroq(apiKey, {
+        model: GROQ_PRIMARY_MODEL,
+        jsonMode: analysis.multi_message,
+        maxTokens: responseMaxTokens,
+        temperature: 0.85,
+        messages: groqMessages,
+      })
     } catch (err) {
-      console.error('chat failed at stage "generate_candidates"', err)
+      console.error('chat failed at stage "call_main_model"', err)
       res.status(502).json({ error: 'Groq API request failed', detail: String(err) })
       return
     }
 
-    const plainTexts: CandidateSet = {
-      A: extractPlainText(candidates.A, analysis.multi_message),
-      B: extractPlainText(candidates.B, analysis.multi_message),
-      C: extractPlainText(candidates.C, analysis.multi_message),
-    }
-
-    stage = 'rank_candidates'
-    const { winner, reason: rankerReason } = await rankCandidates(apiKey, directive, plainTexts)
-    // TEMP DEBUG (Conversation Engine production verification) — remove once confirmed.
-    console.log('RANKER RESULT:', JSON.stringify({ winner, reason: rankerReason }))
-
+    // Therapy-speak post-filter (PRD v1.6): plain string scoring, no
+    // extra Groq call. Only on a score >= THERAPY_SPEAK_THRESHOLD does
+    // this spend a second main-model call regenerating — the common case
+    // is one call in, one response out.
     stage = 'therapy_speak_filter'
-    let finalRaw: string
-    let finalPlain: string
-    let winnerColumn: ResponseCandidateWinner
-    const passedLetter = pickBestUnderThreshold(winner, plainTexts)
-    if (passedLetter) {
-      finalRaw = candidates[passedLetter]
-      finalPlain = plainTexts[passedLetter]
-      winnerColumn = passedLetter
-    } else {
-      // All three candidates read as too therapeutic — regenerate once
-      // with a stronger directive rather than sending a clinical reply.
-      console.error('chat: all 3 candidates scored >= therapy-speak threshold, regenerating once', {
-        scores: { A: scoreTherapySpeak(plainTexts.A), B: scoreTherapySpeak(plainTexts.B), C: scoreTherapySpeak(plainTexts.C) },
+    let finalRaw = raw
+    let finalPlain = extractPlainText(raw, analysis.multi_message)
+    let therapySpeakScore = scoreTherapySpeak(finalPlain)
+    let regenerated = false
+
+    if (therapySpeakScore >= THERAPY_SPEAK_THRESHOLD) {
+      console.error('chat: response scored >= therapy-speak threshold, regenerating once', {
+        score: therapySpeakScore,
       })
       try {
         finalRaw = await callGroq(apiKey, {
           model: GROQ_PRIMARY_MODEL,
           jsonMode: analysis.multi_message,
-          maxTokens: candidateMaxTokens,
+          maxTokens: responseMaxTokens,
           temperature: 0.85,
           messages: [...groqMessages, { role: 'system', content: TOO_THERAPEUTIC_DIRECTIVE }],
         })
@@ -325,46 +304,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return
       }
       finalPlain = extractPlainText(finalRaw, analysis.multi_message)
-      winnerColumn = 'REGENERATED'
-      const regeneratedScore = scoreTherapySpeak(finalPlain)
-      if (regeneratedScore >= THERAPY_SPEAK_THRESHOLD) {
-        console.error('chat: regenerated response also scored >= therapy-speak threshold', { score: regeneratedScore })
+      therapySpeakScore = scoreTherapySpeak(finalPlain)
+      regenerated = true
+      if (therapySpeakScore >= THERAPY_SPEAK_THRESHOLD) {
+        console.error('chat: regenerated response also scored >= therapy-speak threshold', {
+          score: therapySpeakScore,
+        })
       }
     }
 
     stage = 'persist_and_respond'
-    const persistPromises: PromiseLike<unknown>[] = [
+    await Promise.allSettled([
       supabase.from('chat_history').insert({ user_id: user.id, role: 'assistant', content: finalPlain }),
       supabase.functions.invoke('extract-patterns', {
         body: { userId: user.id, content: latestUserMessage.content },
       }),
-    ]
-    if (userMessageId) {
-      persistPromises.push(
-        supabase.from('response_candidates').insert({
-          user_id: user.id,
-          message_id: userMessageId,
-          candidate_a: candidates.A,
-          candidate_b: candidates.B,
-          candidate_c: candidates.C,
-          winner: winnerColumn,
-          ranker_reason: rankerReason,
-        }),
-      )
-    }
-    await Promise.allSettled(persistPromises)
+      // Fine-tuning-dataset preference signal (PRD v1.6): the response
+      // actually sent, its therapy-speak score, and whether it took a
+      // regeneration to get there.
+      supabase.from('response_quality_log').insert({
+        user_id: user.id,
+        response_text: finalPlain,
+        therapy_speak_score: therapySpeakScore,
+        regenerated,
+      }),
+    ])
 
     if (analysis.multi_message) {
       res.status(200).json({ messages: parseMultiMessageJson(finalRaw) })
       return
     }
 
-    // Non-streaming generation is the point of the candidate/ranker
-    // pipeline above — there's no token-by-token Groq stream for a
-    // response that's already been fully generated three times over by
-    // the time a winner is picked. The client still reads this the same
-    // way it always has (a chunked text/plain body via a stream reader),
-    // it just now arrives as a single chunk instead of many.
+    // Non-streaming from Groq — the therapy-speak filter has to see the
+    // full response before deciding whether to regenerate, so there's no
+    // safe point to relay partial tokens straight through. The client
+    // still reads this the same way it always has (a chunked text/plain
+    // body via a stream reader), it just arrives as a single chunk.
     res.setHeader('Content-Type', 'text/plain; charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache, no-transform')
     res.write(finalPlain)
