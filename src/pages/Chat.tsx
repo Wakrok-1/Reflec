@@ -73,10 +73,17 @@ export function Chat() {
       .from('chat_history')
       .select('id, role, content')
       .eq('user_id', user.id)
-      .order('created_at', { ascending: true })
+      // Most recent 50 first (descending), then reversed below — ordering
+      // ascending with a limit here would fetch the OLDEST 50 rows
+      // instead, silently excluding every message sent after a user's
+      // history passes 50 total rows (which is exactly what a page
+      // navigation away from /chat and back was surfacing: the component
+      // remounts, refetches, and any new exchange beyond that cutoff
+      // just never comes back).
+      .order('created_at', { ascending: false })
       .limit(50)
       .then(({ data }) => {
-        if (data) setMessages(data.map((m) => ({ id: m.id, role: m.role, content: m.content })))
+        if (data) setMessages(data.reverse().map((m) => ({ id: m.id, role: m.role, content: m.content })))
       })
   }, [user])
 
