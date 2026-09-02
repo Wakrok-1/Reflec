@@ -1,52 +1,30 @@
 import { SYSTEM_PROMPT } from './systemPrompt'
-import type { Goal, PatternExtraction, Profile, MemorySummary } from './database.types'
+import type { Goal, PatternExtraction, Profile, MemorySummary, SelfConcept } from './database.types'
 
-// Hard per-section token caps (PRD v1.6 token-budget hardening) — the
-// main model call was hitting Groq's 8,000 TPM free-tier limit on the
-// very first call, before any regeneration. 1,250 tokens total across
-// every dynamic memory section, leaving headroom under the fixed system
-// prompt prose (RULES/GUARDRAILS/etc., not capped here — see
-// systemPrompt.ts) plus conversation history plus the response itself.
-const PROFILE_TOKEN_CAP = 300
-const PATTERNS_TOKEN_CAP = 200
-const TASTE_TOKEN_CAP = 150
-const SUMMARIES_TOKEN_CAP = 200
-const VECTOR_HITS_TOKEN_CAP = 200
-const GOALS_TOKEN_CAP = 100
-const CALENDAR_TOKEN_CAP = 100
+// Token budget (PRD 7.2 "Per-Request Context Injection"). Profile +
+// patterns are the fixed "hot" tier and are never trimmed; summaries fill
+// the next slice; vector hits fill whatever's left. Because we fill in
+// that priority order and simply stop once each tier's ceiling is hit,
+// "trim vector hits first, then older summaries" falls out naturally —
+// vector hits are the last tier filled, so they're the first to come up
+// short.
+//
+// This used to be a much tighter, per-section hard-capped budget (PRD
+// v1.6 token-budget hardening) built to squeeze the whole request under
+// Groq's 8,000 TPM free-tier ceiling. That effort was abandoned — the
+// static system prompt alone is already ~2,880 tokens, so no amount of
+// memory trimming got the total under the limit — in favor of moving the
+// main model call to Gemini 1.5 Flash (api/_lib/gemini.ts), which has a
+// 1M token context and no comparable TPM wall. These budgets are back to
+// their original, more generous sizes.
+const SUMMARY_CUMULATIVE_BUDGET = 1200 // 800 (hot) + 400 (summaries)
+const TOTAL_BUDGET = 2000 // + 500-ish for vector hits, whatever remains
 
 // No tokenizer dependency here — this is a soft relevance/cost budget,
-// not a hard context-window limit (gpt-oss-120b has 131k context), so a
-// ~4-chars-per-token approximation is good enough.
+// not a hard context-window limit, so a ~4-chars-per-token approximation
+// is good enough.
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4)
-}
-
-// Truncates a single block of text to fit a token cap, character-based
-// (the same ~4-chars-per-token estimate as everywhere else in this
-// file), with a trailing ellipsis when it actually had to cut something.
-function capText(text: string, maxTokens: number): string {
-  const maxChars = maxTokens * 4
-  if (text.length <= maxChars) return text
-  return `${text.slice(0, Math.max(0, maxChars - 1)).trim()}…`
-}
-
-// Truncates a group of named fields (e.g. profile's name/age/class/...)
-// down to a shared token budget by scaling every field's length by the
-// same ratio, rather than a priority order that would zero some fields
-// out entirely while leaving others untouched — every field in the group
-// keeps some content, proportional to how much it had to begin with.
-function capFieldGroup(fields: Record<string, string>, maxTokens: number): Record<string, string> {
-  const maxChars = maxTokens * 4
-  const totalChars = Object.values(fields).reduce((sum, value) => sum + value.length, 0)
-  if (totalChars <= maxChars) return fields
-  const ratio = maxChars / totalChars
-  const capped: Record<string, string> = {}
-  for (const [key, value] of Object.entries(fields)) {
-    const allowed = Math.max(0, Math.floor(value.length * ratio) - 1)
-    capped[key] = value.length > allowed ? `${value.slice(0, allowed).trim()}…` : value
-  }
-  return capped
 }
 
 function joinOrFallback(items: unknown[] | undefined | null, fallback = 'none yet'): string {
@@ -108,6 +86,13 @@ export interface MemoryBundle {
    * whole <calendar> block is then omitted entirely, no empty tag.
    */
   upcomingEvents: UpcomingCalendarEvent[] | undefined
+  /**
+   * Self-Concept Layer (PRD v1.6 Part 2). `null` until the extract-patterns
+   * Edge Function has run at least once for this user — the whole
+   * <self_concept> block is then omitted entirely, same "no data yet"
+   * treatment as calendar.
+   */
+  selfConcept: SelfConcept | null
 }
 
 // Reduces flat `goals` table rows (big_goal + increment, any status) down
@@ -164,119 +149,129 @@ function formatCalendar(events: UpcomingCalendarEvent[] | undefined): string {
   return `<calendar>\n  <upcoming>\n${lines.join('\n')}\n  </upcoming>\n</calendar>`
 }
 
-// Per-section token counts after capping — logged by api/chat.ts (TEMP
-// DEBUG, context token budget investigation) to see which sections
-// actually drive total prompt size in production.
-export interface ContextTokenBreakdown {
-  profile_tokens: number
-  patterns_tokens: number
-  taste_tokens: number
-  summaries_tokens: number
-  vector_hits_tokens: number
-  goals_tokens: number
-  calendar_tokens: number
+// Self-Concept Layer rendering (PRD v1.6 Part 2). declared_self entries
+// carry the highest authority (see systemPrompt.ts's SELF-CONCEPT
+// PRIORITY) — they come from the user's own words, not inference.
+// observed_self.patterns are behavioural inferences the extract-patterns
+// Edge Function made, each with its own confidence — separate from the
+// six broad confidence_scores dimensions, which describe how much
+// evidence exists overall, not how sure we are about any one pattern.
+function formatSelfConcept(selfConcept: SelfConcept | null): string {
+  if (!selfConcept) return ''
+
+  const declaredEntries = Object.entries(selfConcept.declared_self ?? {})
+  const declaredLines = declaredEntries.map(
+    ([key, entry]) => `    <${key} source="${escapeXmlAttr(entry.source)}">${escapeXmlAttr(entry.value)}</${key}>`,
+  )
+
+  const patterns = selfConcept.observed_self?.patterns ?? []
+  const observedLines = patterns.map(
+    (p) => `    <pattern confidence="${p.confidence.toFixed(2)}">${escapeXmlAttr(p.text)}</pattern>`,
+  )
+
+  const tensionLines = (selfConcept.identity_tensions ?? []).map(
+    (t) => `    <tension>${escapeXmlAttr(t)}</tension>`,
+  )
+
+  const evolutionLines = (selfConcept.identity_evolution ?? []).map(
+    (e) => `    <period date="${escapeXmlAttr(e.period)}">${escapeXmlAttr(e.description)}</period>`,
+  )
+
+  if (!declaredLines.length && !observedLines.length && !tensionLines.length && !evolutionLines.length) {
+    return ''
+  }
+
+  const c = selfConcept.confidence_scores
+  const confidenceLine = `    surface: ${c.surface.toFixed(2)}, values: ${c.values.toFixed(2)}, behaviour: ${c.behaviour.toFixed(2)}, emotional_patterns: ${c.emotional_patterns.toFixed(2)}, self_concept: ${c.self_concept.toFixed(2)}, deep_identity: ${c.deep_identity.toFixed(2)}`
+
+  return `<self_concept>
+  <declared>
+${declaredLines.join('\n') || '    <none />'}
+  </declared>
+  <observed>
+${observedLines.join('\n') || '    <none />'}
+  </observed>
+  <tensions>
+${tensionLines.join('\n') || '    <none />'}
+  </tensions>
+  <evolution>
+${evolutionLines.join('\n') || '    <none />'}
+  </evolution>
+  <confidence>
+${confidenceLine}
+  </confidence>
+</self_concept>`
 }
 
 export interface BuiltContext {
   values: Record<string, string>
   tokensUsed: number
-  breakdown: ContextTokenBreakdown
 }
 
 export function buildContextValues(bundle: MemoryBundle): BuiltContext {
   const { profile, patterns } = bundle
 
-  const profileFields = capFieldGroup(
-    {
-      name: profile.name || 'unknown',
-      age: profile.age != null ? String(profile.age) : 'unknown',
-      class: profile.class || 'not yet defined',
-      strengths: joinOrFallback(profile.strengths as unknown[]),
-      philosophy: profile.philosophy || 'not yet shared',
-      core_values: joinOrFallback(profile.core_values as unknown[]),
-    },
-    PROFILE_TOKEN_CAP,
-  )
-
-  const patternsFields = capFieldGroup(
-    {
-      emotional_triggers: joinOrFallback(patterns?.emotional_triggers),
-      coping_patterns: joinOrFallback(patterns?.coping_patterns),
-      energy_patterns: joinOrFallback(patterns?.energy_patterns),
-      communication_style: patterns?.communication_style || 'not yet established',
-      recurring_themes: joinOrFallback(patterns?.recurring_themes),
-      writing_signature: formatRecord(patterns?.writing_signature, 'not yet established'),
-      response_preference: formatRecord(patterns?.response_preference, 'not yet established'),
-    },
-    PATTERNS_TOKEN_CAP,
-  )
-
-  const tasteContext = capText(formatTasteContext(patterns?.taste_context), TASTE_TOKEN_CAP)
-  const activeGoalsText = capText(formatActiveGoals(bundle.activeGoals), GOALS_TOKEN_CAP)
-  const calendarText = capText(formatCalendar(bundle.upcomingEvents), CALENDAR_TOKEN_CAP)
-
   const values: Record<string, string> = {
-    ...profileFields,
-    ...patternsFields,
-    taste_context: tasteContext,
+    name: profile.name || 'unknown',
+    age: profile.age != null ? String(profile.age) : 'unknown',
+    class: profile.class || 'not yet defined',
+    strengths: joinOrFallback(profile.strengths as unknown[]),
+    philosophy: profile.philosophy || 'not yet shared',
+    core_values: joinOrFallback(profile.core_values as unknown[]),
+    emotional_triggers: joinOrFallback(patterns?.emotional_triggers),
+    coping_patterns: joinOrFallback(patterns?.coping_patterns),
+    energy_patterns: joinOrFallback(patterns?.energy_patterns),
+    communication_style: patterns?.communication_style || 'not yet established',
+    recurring_themes: joinOrFallback(patterns?.recurring_themes),
+    taste_context: formatTasteContext(patterns?.taste_context),
+    writing_signature: formatRecord(patterns?.writing_signature, 'not yet established'),
+    response_preference: formatRecord(patterns?.response_preference, 'not yet established'),
     rolling_summary_last_7_days: 'no recent summary yet',
     vector_search_hits: 'nothing relevant surfaced yet',
-    active_goals: activeGoalsText,
-    calendar: calendarText,
+    active_goals: formatActiveGoals(bundle.activeGoals),
+    calendar: formatCalendar(bundle.upcomingEvents),
+    self_concept: formatSelfConcept(bundle.selfConcept),
   }
 
-  // Independent budgets, not cumulative with everything already filled —
-  // each dynamic section gets its own fixed slice rather than "whatever
-  // the hot tier left over," so one large profile can't crowd out
-  // summaries/vector hits entirely.
+  // Hot tier (profile + patterns) is fixed and never trimmed, but still
+  // counts against the budget so the lower tiers know how much room they
+  // have left.
+  let tokensUsed = estimateTokens(Object.values(values).join(' '))
+
   const summaryLines: string[] = []
-  let summaryTokens = 0
   for (const summary of bundle.summaries) {
     const line = `[${summary.period_start.slice(0, 10)} to ${summary.period_end.slice(0, 10)}, ${summary.tier}] ${summary.summary}`
     const lineTokens = estimateTokens(line)
-    if (summaryTokens + lineTokens > SUMMARIES_TOKEN_CAP) break
+    if (tokensUsed + lineTokens > SUMMARY_CUMULATIVE_BUDGET) break
     summaryLines.push(line)
-    summaryTokens += lineTokens
+    tokensUsed += lineTokens
   }
   if (summaryLines.length > 0) {
     values.rolling_summary_last_7_days = summaryLines.join('\n')
   }
 
   const hitLines: string[] = []
-  let vectorHitTokens = 0
   for (const hit of bundle.vectorHits) {
     const line = `(${hit.created_at.slice(0, 10)}) ${hit.content}`
     const lineTokens = estimateTokens(line)
-    if (vectorHitTokens + lineTokens > VECTOR_HITS_TOKEN_CAP) break
+    if (tokensUsed + lineTokens > TOTAL_BUDGET) break
     hitLines.push(line)
-    vectorHitTokens += lineTokens
+    tokensUsed += lineTokens
   }
   if (hitLines.length > 0) {
     values.vector_search_hits = hitLines.join('\n')
   }
 
-  const breakdown: ContextTokenBreakdown = {
-    profile_tokens: estimateTokens(Object.values(profileFields).join(' ')),
-    patterns_tokens: estimateTokens(Object.values(patternsFields).join(' ')),
-    taste_tokens: estimateTokens(tasteContext),
-    summaries_tokens: estimateTokens(values.rolling_summary_last_7_days),
-    vector_hits_tokens: estimateTokens(values.vector_search_hits),
-    goals_tokens: estimateTokens(activeGoalsText),
-    calendar_tokens: estimateTokens(calendarText),
-  }
-
-  const tokensUsed = Object.values(breakdown).reduce((sum, n) => sum + n, 0)
-
-  return { values, tokensUsed, breakdown }
+  return { values, tokensUsed }
 }
 
 // Replaces every {placeholder} in SYSTEM_PROMPT's [MEMORY] block with the
 // built context values. Everything outside [MEMORY] (IDENTITY, RULES,
 // BEHAVIOUR, GUARDRAILS, ...) is untouched, verbatim prose.
-export function renderSystemPrompt(bundle: MemoryBundle): { prompt: string; tokensUsed: number; breakdown: ContextTokenBreakdown } {
-  const { values, tokensUsed, breakdown } = buildContextValues(bundle)
+export function renderSystemPrompt(bundle: MemoryBundle): { prompt: string; tokensUsed: number } {
+  const { values, tokensUsed } = buildContextValues(bundle)
   const prompt = SYSTEM_PROMPT.replace(/\{(\w+)\}/g, (match, key: string) =>
     key in values ? values[key] : match,
   )
-  return { prompt, tokensUsed, breakdown }
+  return { prompt, tokensUsed }
 }

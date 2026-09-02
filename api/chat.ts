@@ -1,13 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { verifyUser } from './_lib/verifyUser'
 import { createUserScopedClient } from './_lib/supabaseServer'
-import { callGroq, GroqError, GROQ_PRIMARY_MODEL, type GroqMessage } from './_lib/groq'
-import {
-  analyzeConversation,
-  buildConversationDirective,
-  buildMultiMessageInstruction,
-  type ConversationAnalysis,
-} from './_lib/conversationAnalyzer'
+import { callGemini, type GeminiMessage } from './_lib/gemini'
+import { analyzeConversation, buildConversationDirective, buildMultiMessageInstruction } from './_lib/conversationAnalyzer'
 import {
   parseMultiMessageJson,
   extractPlainText,
@@ -19,16 +14,15 @@ import { getValidAccessToken, listUpcomingEvents } from './_lib/googleCalendar'
 import {
   buildActiveGoalsSummary,
   renderSystemPrompt,
-  estimateTokens,
   type ActiveGoalSummary,
   type MemoryBundle,
   type UpcomingCalendarEvent,
   type VectorHit,
 } from '../src/lib/contextBuilder'
-import type { PatternExtraction, Profile, MemorySummary } from '../src/lib/database.types'
+import type { PatternExtraction, Profile, MemorySummary, SelfConcept } from '../src/lib/database.types'
 
 interface ChatRequestBody {
-  messages?: GroqMessage[]
+  messages?: GeminiMessage[]
   userId?: string
   // Pre-fetched Tavily results the user explicitly confirmed via the
   // search confirm bubble (PRD 5.3) — never populated automatically.
@@ -41,6 +35,26 @@ const VECTOR_HITS_TOTAL = 5
 const TOO_THERAPEUTIC_DIRECTIVE =
   'Previous response was too therapeutic. Respond more directly. Do not describe their emotion back to them.'
 
+// Reflection feature (PRD v1.6 Part 2) — an explicit request, not an
+// inferred one. "reflect me" / "bayangan diri aku" (Malay) / "show my
+// reflection" all mean the same thing: stop the normal conversational
+// turn and synthesise a portrait instead.
+const REFLECTION_TRIGGER_PATTERNS = [/reflect me/i, /bayangan diri aku/i, /show my reflection/i]
+
+function isReflectionTrigger(text: string): boolean {
+  return REFLECTION_TRIGGER_PATTERNS.some((pattern) => pattern.test(text))
+}
+
+const REFLECTION_MODE_DIRECTIVE = `The user just explicitly asked to be reflected back — REFLECTION MODE is active for this response only.
+
+Synthesise everything you know about them into one specific, honest mirror:
+- Who they have been across time (declared_self + identity_evolution in <self_concept>)
+- How they've changed (identity_evolution, the observed patterns in <self_concept>)
+- What tensions exist in their self-concept (identity_tensions)
+- What you've learned about how to talk to them (interaction_memory, response_preference)
+
+Write in second person. Be specific — use their own words and patterns as evidence, not generic affirmations. No therapy-speak, no clinical voice — this is [EXAMPLES]'s voice, just given more room to breathe. This is the one moment a longer response is earned; do not pad it, but do not rush it either.`
+
 type ScopedSupabase = ReturnType<typeof createUserScopedClient>
 
 interface MemoryContextResult {
@@ -49,26 +63,34 @@ interface MemoryContextResult {
   patterns: PatternExtraction | null
   summaries: MemorySummary[]
   activeGoals: ActiveGoalSummary[]
+  selfConcept: SelfConcept | null
 }
 
 // One of the Conversation Engine's pre-model calls run in parallel (see
 // the Promise.all in the handler below) — profile, patterns, summaries,
-// and goals are four independent Supabase queries, so they're further
-// parallelized against each other here too. Pure Supabase reads, no Groq
-// calls, so none of this counts against the Groq free-tier rate limit.
+// goals, and self_concept are five independent Supabase queries, so
+// they're further parallelized against each other here too. Pure
+// Supabase reads, no model calls, so none of this counts against any
+// provider's rate limit.
 async function fetchMemoryContext(supabase: ScopedSupabase, userId: string): Promise<MemoryContextResult> {
-  const [{ data: profile, error: profileError }, { data: patterns }, { data: summaries }, { data: goalRows }] =
-    await Promise.all([
-      supabase.from('profiles').select('*').eq('id', userId).single(),
-      supabase.from('pattern_extractions').select('*').eq('user_id', userId).maybeSingle(),
-      supabase
-        .from('memory_summaries')
-        .select('*')
-        .eq('user_id', userId)
-        .order('period_end', { ascending: false })
-        .limit(20),
-      supabase.from('goals').select('*').eq('user_id', userId).in('type', ['big_goal', 'increment']),
-    ])
+  const [
+    { data: profile, error: profileError },
+    { data: patterns },
+    { data: summaries },
+    { data: goalRows },
+    { data: selfConcept },
+  ] = await Promise.all([
+    supabase.from('profiles').select('*').eq('id', userId).single(),
+    supabase.from('pattern_extractions').select('*').eq('user_id', userId).maybeSingle(),
+    supabase
+      .from('memory_summaries')
+      .select('*')
+      .eq('user_id', userId)
+      .order('period_end', { ascending: false })
+      .limit(20),
+    supabase.from('goals').select('*').eq('user_id', userId).in('type', ['big_goal', 'increment']),
+    supabase.from('self_concept').select('*').eq('user_id', userId).maybeSingle(),
+  ])
 
   return {
     profile: (profile as Profile) ?? null,
@@ -76,6 +98,7 @@ async function fetchMemoryContext(supabase: ScopedSupabase, userId: string): Pro
     patterns: (patterns as PatternExtraction) ?? null,
     summaries: summaries ?? [],
     activeGoals: buildActiveGoalsSummary(goalRows ?? []),
+    selfConcept: (selfConcept as SelfConcept) ?? null,
   }
 }
 
@@ -104,7 +127,7 @@ interface VectorSearchResult {
 // Embeds the new message once, up front: this exact embedding is both
 // (a) the query vector for this request's semantic search, and (b) what
 // gets stored on the chat_history row — no reason to compute it twice.
-// The embed-text call is a Supabase Edge Function invocation, not a Groq
+// The embed-text call is a Supabase Edge Function invocation, not a model
 // call, so it's safe to run alongside the other pre-model branches too.
 async function runVectorSearch(
   supabase: ScopedSupabase,
@@ -152,25 +175,6 @@ async function runVectorSearch(
   return { embedding, vectorHits }
 }
 
-// gpt-oss sometimes ignores the multi-message JSON-array instruction and
-// just writes a normal reply instead of {"messages": [...]} — Groq's
-// response_format: json_object then rejects it with a 400
-// json_validate_failed, but the error body still hands back the model's
-// actual generated text via failed_generation. Salvaging that instead of
-// failing the whole turn means the user still gets a real, on-topic
-// response — just one bubble instead of several. Mutates
-// analysis.multi_message to false so every step downstream of this call
-// (plain-text extraction, therapy-speak scoring, the final response
-// shape) treats the rest of this turn as single-message.
-function salvageFailedGeneration(err: unknown, analysis: ConversationAnalysis, logContext: string): string | null {
-  if (err instanceof GroqError && err.failedGeneration && err.failedGeneration.trim().length > 0) {
-    console.error(`chat: ${logContext} failed JSON validation, salvaging failed_generation as a single message`, err.detail)
-    analysis.multi_message = false
-    return err.failedGeneration
-  }
-  return null
-}
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed' })
@@ -179,7 +183,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // Tracks which step was in flight when something throws, so Vercel's logs
   // say *where* chat failed instead of just "chat failed" — the difference
-  // between "auth is broken" and "Groq is down" at a glance.
+  // between "auth is broken" and "a model provider is down" at a glance.
   let stage = 'start'
 
   try {
@@ -202,11 +206,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return
     }
 
-    stage = 'check_groq_key'
-    const apiKey = process.env.GROQ_API_KEY
-    if (!apiKey) {
-      console.error('chat failed at stage "check_groq_key": GROQ_API_KEY is not set in this environment')
+    // Two model providers now: the conversation analyzer stays on Groq
+    // (openai/gpt-oss-20b — fast, cheap, well within its own free-tier
+    // budget), while the main response moved to Gemini (see
+    // api/_lib/gemini.ts for why). Both keys are checked up front so a
+    // missing one fails clearly here instead of deep inside a provider
+    // call with a generic error.
+    stage = 'check_api_keys'
+    const groqApiKey = process.env.GROQ_API_KEY
+    if (!groqApiKey) {
+      console.error('chat failed at stage "check_api_keys": GROQ_API_KEY is not set in this environment')
       res.status(500).json({ error: 'GROQ_API_KEY is not configured on the server' })
+      return
+    }
+    if (!process.env.GOOGLE_AI_API_KEY) {
+      console.error('chat failed at stage "check_api_keys": GOOGLE_AI_API_KEY is not set in this environment')
+      res.status(500).json({ error: 'GOOGLE_AI_API_KEY is not configured on the server' })
       return
     }
 
@@ -223,14 +238,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // and calendar fetch have no dependency on one another, so they run
     // genuinely concurrently — each async function below is invoked
     // (starting it immediately) directly inside the array literal, not
-    // awaited one at a time beforehand. Running the analyzer inside this
-    // same Promise.all doesn't add any Groq calls beyond the one it was
-    // always going to make; only the memory/vector/calendar branches are
-    // "free" to parallelize in the rate-limit sense, since those are
-    // Supabase calls.
+    // awaited one at a time beforehand.
     stage = 'parallel_pre_model'
     const [analysis, memoryContext, upcomingEvents, vectorSearchResult] = await Promise.all([
-      analyzeConversation(apiKey, body.messages.slice(-8)),
+      analyzeConversation(groqApiKey, body.messages.slice(-8)),
       fetchMemoryContext(supabase, user.id),
       fetchCalendarEvents(supabase, user.id),
       runVectorSearch(supabase, user.id, latestUserMessage.content),
@@ -258,126 +269,63 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       vectorHits: vectorSearchResult.vectorHits,
       activeGoals: memoryContext.activeGoals,
       upcomingEvents,
+      selfConcept: memoryContext.selfConcept,
     }
 
-    const { prompt: systemPrompt, breakdown } = renderSystemPrompt(bundle)
+    const { prompt: systemPromptBase } = renderSystemPrompt(bundle)
 
-    const groqMessages: GroqMessage[] = [{ role: 'system', content: systemPrompt }]
+    const reflectionRequested = isReflectionTrigger(latestUserMessage.content)
+    if (reflectionRequested) {
+      // A portrait is one long message, not a back-and-forth burst —
+      // override whatever the analyzer decided for this one turn.
+      analysis.multi_message = false
+    }
+
+    // Gemini takes the system prompt out of band (systemInstruction, see
+    // api/_lib/gemini.ts) rather than as a message in the conversation
+    // list the way Groq's system-role messages worked — every piece that
+    // used to be a separate system message (search context, the
+    // conversational directive, the multi-message instruction, the
+    // reflection directive) is folded into one system prompt string
+    // instead.
+    const systemPromptParts = [systemPromptBase]
     if (body.searchContext) {
-      groqMessages.push({
-        role: 'system',
-        content: `<search_results>\n${body.searchContext}\n</search_results>`,
-      })
+      systemPromptParts.push(`<search_results>\n${body.searchContext}\n</search_results>`)
     }
-
-    const directive = buildConversationDirective(analysis)
-    groqMessages.push({ role: 'system', content: directive })
+    systemPromptParts.push(buildConversationDirective(analysis))
     if (analysis.multi_message) {
-      groqMessages.push({ role: 'system', content: buildMultiMessageInstruction(analysis) })
+      systemPromptParts.push(buildMultiMessageInstruction(analysis))
     }
-    groqMessages.push(...body.messages)
+    if (reflectionRequested) {
+      systemPromptParts.push(REFLECTION_MODE_DIRECTIVE)
+    }
+    const geminiSystemPrompt = systemPromptParts.join('\n\n')
+    const conversationMessages: GeminiMessage[] = body.messages
 
-    // TEMP DEBUG (context token budget investigation) — Groq's 8,000 TPM
-    // free-tier limit was being hit on the very first call_main_model
-    // request. Logs every injected section's estimated size so production
-    // traffic shows which section(s) actually drive total prompt size,
-    // rather than guessing. Remove once the 429s are confirmed gone.
-    const systemPromptTokens = estimateTokens(systemPrompt)
-    const conversationHistoryTokens = body.messages.reduce((sum, m) => sum + estimateTokens(m.content), 0)
-    const totalTokens = groqMessages.reduce((sum, m) => sum + estimateTokens(m.content), 0)
-    console.log('TEMP DEBUG context token budget', {
-      profile_tokens: breakdown.profile_tokens,
-      patterns_tokens: breakdown.patterns_tokens,
-      taste_tokens: breakdown.taste_tokens,
-      summaries_tokens: breakdown.summaries_tokens,
-      vector_hits_tokens: breakdown.vector_hits_tokens,
-      goals_tokens: breakdown.goals_tokens,
-      calendar_tokens: breakdown.calendar_tokens,
-      system_prompt_tokens: systemPromptTokens,
-      conversation_history_tokens: conversationHistoryTokens,
-      total_tokens: totalTokens,
-    })
+    const responseMaxTokens = reflectionRequested ? 1200 : analysis.multi_message ? 500 : 800
 
-    const responseMaxTokens = analysis.multi_message ? 500 : 800
-
-    // Single main-model call (PRD v1.6, revised) — the Groq free tier's
-    // 1,000-requests/day cap means this stays at exactly one call here
-    // (plus the one analyzer call above), not the three parallel
-    // candidates + ranker call an earlier version of this pipeline used.
-    //
-    // disableFallback: true — this request already made one gpt-oss-20b
-    // call (the analyzer, above, in the same Promise.all). If this
-    // gpt-oss-120b call 429s, callGroq's default behavior would retry
-    // against gpt-oss-20b — the same pool the analyzer just drew from —
-    // which can immediately 429 again rather than actually recovering.
-    // Fail with the original 429 instead of compounding it.
-    //
-    // reasoningEffort: 'low' — the same gpt-oss "reasoning burns the
-    // whole token budget, content ends up empty" failure mode that hit
-    // the analyzer (fixed there earlier) also hits the main model on the
-    // multi-message JSON path: a 400 json_validate_failed with
-    // failed_generation: "" — no prose to salvage, because the model
-    // never got past its own internal chain-of-thought to write anything
-    // into the answer channel at all. This wasn't applied here originally
-    // (kept off deliberately, on the theory a conversational reply might
-    // benefit from more deliberation than a mechanical classifier) —
-    // but a response that hard-fails is worse than one reasoned a little
-    // less deeply, and 'low' doesn't reduce the model's capability to
-    // write in character, only how much it deliberates before doing so.
+    // Single main-model call (PRD v1.6). Gemini 1.5 Flash's 1M token
+    // context and generous free tier are why this moved off Groq — the
+    // 8,000 TPM ceiling there was structurally too small for this app's
+    // injected context (system prompt alone is ~2,880 tokens), not
+    // something per-section trimming could fix.
     stage = 'call_main_model'
     let raw: string
     try {
-      raw = await callGroq(apiKey, {
-        model: GROQ_PRIMARY_MODEL,
-        jsonMode: analysis.multi_message,
+      raw = await callGemini({
+        systemPrompt: geminiSystemPrompt,
+        messages: conversationMessages,
         maxTokens: responseMaxTokens,
         temperature: 0.85,
-        reasoningEffort: 'low',
-        disableFallback: true,
-        messages: groqMessages,
       })
     } catch (err) {
-      // Groq's 429 error text names a specific retry-after duration for
-      // this TPM window (observed: "try again in 6.855s") — a single
-      // 7-second wait then one retry is cheap relative to Vercel's
-      // function timeout and turns a hard failure into a slow-but-working
-      // turn for the common "just over the limit" case, without the
-      // fallback-cascade risk disableFallback above already guards against.
-      if (err instanceof GroqError && err.status === 429) {
-        console.error('chat: call_main_model hit 429, waiting 7s and retrying once', err.detail)
-        await new Promise((resolve) => setTimeout(resolve, 7000))
-        try {
-          raw = await callGroq(apiKey, {
-            model: GROQ_PRIMARY_MODEL,
-            jsonMode: analysis.multi_message,
-            maxTokens: responseMaxTokens,
-            temperature: 0.85,
-            reasoningEffort: 'low',
-            disableFallback: true,
-            messages: groqMessages,
-          })
-        } catch (retryErr) {
-          const salvaged = salvageFailedGeneration(retryErr, analysis, 'call_main_model retry')
-          if (salvaged === null) {
-            console.error('chat failed at stage "call_main_model" (after 429 retry)', retryErr)
-            res.status(429).json({ error: "Give me a second — I'm a little overloaded right now. Try again in a moment." })
-            return
-          }
-          raw = salvaged
-        }
-      } else {
-        const salvaged = salvageFailedGeneration(err, analysis, 'call_main_model')
-        if (salvaged === null) {
-          console.error('chat failed at stage "call_main_model"', err)
-          res.status(502).json({ error: 'Groq API request failed', detail: String(err) })
-          return
-        }
-        raw = salvaged
-      }
+      console.error('chat failed at stage "call_main_model"', err)
+      res.status(502).json({ error: 'Gemini API request failed', detail: String(err) })
+      return
     }
 
     // Therapy-speak post-filter (PRD v1.6): plain string scoring, no
-    // extra Groq call. A response regenerates once if either its point
+    // extra model call. A response regenerates once if either its point
     // score hits THERAPY_SPEAK_THRESHOLD, OR it opens with "I hear"/"I
     // can hear"/"I'm hearing" — that opener is an automatic reject that
     // bypasses the point system entirely, since at only 3 points it
@@ -397,14 +345,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         autoRejected,
       })
       try {
-        const regeneratedRaw = await callGroq(apiKey, {
-          model: GROQ_PRIMARY_MODEL,
-          jsonMode: analysis.multi_message,
+        const regeneratedRaw = await callGemini({
+          systemPrompt: `${geminiSystemPrompt}\n\n${TOO_THERAPEUTIC_DIRECTIVE}`,
+          messages: conversationMessages,
           maxTokens: responseMaxTokens,
           temperature: 0.85,
-          reasoningEffort: 'low',
-          disableFallback: true,
-          messages: [...groqMessages, { role: 'system', content: TOO_THERAPEUTIC_DIRECTIVE }],
         })
         finalRaw = regeneratedRaw
         finalPlain = extractPlainText(finalRaw, analysis.multi_message)
@@ -412,36 +357,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         autoRejected = isAutoRejectedTherapySpeak(finalPlain)
         regenerated = true
       } catch (err) {
-        const salvaged = salvageFailedGeneration(err, analysis, 'therapy_speak_filter regeneration')
-        if (salvaged !== null) {
-          finalRaw = salvaged
-          finalPlain = extractPlainText(finalRaw, analysis.multi_message)
-          therapySpeakScore = scoreTherapySpeak(finalPlain)
-          autoRejected = isAutoRejectedTherapySpeak(finalPlain)
-          regenerated = true
-        } else {
-          // Regeneration is a quality improvement on top of an already-
-          // working reply, not a required step — the original response
-          // (raw/finalPlain as already computed above) is real and
-          // coherent, just flagged by the filter as too clinical. If the
-          // retry itself fails outright (e.g. a 429 on gpt-oss-120b's own
-          // token-per-minute budget, which a same-model regeneration call
-          // can trigger on its own without any fallback involved), send
-          // the original instead of turning a working turn into an error
-          // page. therapySpeakScore/autoRejected/regenerated (still
-          // false) are left as-is, so what gets logged and persisted
-          // honestly reflects that the flagged original was what shipped.
-          console.error(
-            'chat: therapy_speak_filter regeneration failed, sending the original (filter-flagged) response instead of failing the turn',
-            err,
-          )
-        }
+        // Regeneration is a quality improvement on top of an already-
+        // working reply, not a required step — the original response
+        // (raw/finalPlain as already computed above) is real and
+        // coherent, just flagged by the filter as too clinical. Send it
+        // instead of turning a working turn into an error page.
+        console.error(
+          'chat: therapy_speak_filter regeneration failed, sending the original (filter-flagged) response instead of failing the turn',
+          err,
+        )
       }
       // Only worth a second log line if a regeneration actually happened
-      // and still failed the filter — the "regeneration errored outright,
-      // sent the original instead" case already logged its own reason
-      // above, and re-logging the same original score here as if a
-      // regenerated response had failed would be misleading.
+      // and still failed the filter.
       if (regenerated && (therapySpeakScore >= THERAPY_SPEAK_THRESHOLD || autoRejected)) {
         console.error('chat: regenerated response also failed the therapy-speak filter', {
           score: therapySpeakScore,
@@ -451,8 +378,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     stage = 'persist_and_respond'
-    await Promise.allSettled([
-      supabase.from('chat_history').insert({ user_id: user.id, role: 'assistant', content: finalPlain }),
+    const [assistantInsert] = await Promise.allSettled([
+      supabase
+        .from('chat_history')
+        .insert({ user_id: user.id, role: 'assistant', content: finalPlain })
+        .select('id')
+        .single(),
       supabase.functions.invoke('extract-patterns', {
         body: { userId: user.id, content: latestUserMessage.content },
       }),
@@ -467,18 +398,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }),
     ])
 
+    // Handed back to the client so a later "this felt right" tap
+    // (Chat.tsx's markFeltRight) can record response_signals.chat_message_id
+    // against the exact response it's reacting to — self_concept's
+    // interaction_memory (PRD v1.6 Part 2) reads that link back out.
+    const assistantMessageId =
+      assistantInsert.status === 'fulfilled'
+        ? ((assistantInsert.value as { data?: { id?: string } }).data?.id ?? undefined)
+        : undefined
+
     if (analysis.multi_message) {
-      res.status(200).json({ messages: parseMultiMessageJson(finalRaw) })
+      res.status(200).json({ messages: parseMultiMessageJson(finalRaw), assistantMessageId })
       return
     }
 
-    // Non-streaming from Groq — the therapy-speak filter has to see the
+    // Non-streaming from Gemini — the therapy-speak filter has to see the
     // full response before deciding whether to regenerate, so there's no
     // safe point to relay partial tokens straight through. The client
     // still reads this the same way it always has (a chunked text/plain
     // body via a stream reader), it just arrives as a single chunk.
     res.setHeader('Content-Type', 'text/plain; charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache, no-transform')
+    if (assistantMessageId) {
+      res.setHeader('X-Message-Id', assistantMessageId)
+    }
     res.write(finalPlain)
     res.end()
   } catch (err) {

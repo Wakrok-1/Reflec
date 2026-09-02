@@ -160,6 +160,7 @@ async function handleChat(req: VercelRequest, res: VercelResponse, body: Onboard
     vectorHits: [],
     activeGoals: [],
     upcomingEvents: undefined,
+    selfConcept: null,
   }
   const { prompt: systemPrompt } = renderSystemPrompt(bundle)
 

@@ -15,8 +15,12 @@ sync, or context injection exists. Charts land in a later sprint.
 - Frontend: React + Tailwind CSS (Vite)
 - Backend / DB / Auth: Supabase (Postgres + RLS + pgvector + pg_cron)
 - Embeddings: Supabase built-in `gte-small` (384 dims), via Supabase Edge Functions
-- AI: Groq (`openai/gpt-oss-120b` primary, `openai/gpt-oss-20b` fallback + intent
-  classifier) via Vercel serverless functions — key never reaches the browser
+- AI: main chat responses via Google AI Studio's Gemini (`gemini-1.5-flash`)
+  — Groq's free-tier 8,000 TPM limit was structurally too small for this
+  app's injected context (PRD v1.6). The conversation analyzer and intent
+  classifier stay on Groq (`openai/gpt-oss-20b`) since their own footprint
+  was never the problem. Vercel serverless functions only — both keys
+  never reach the browser
 - Web search: Tavily, only on explicit user confirmation in chat
 - Hosting: Vercel
 
@@ -42,6 +46,16 @@ sync, or context injection exists. Charts land in a later sprint.
      `memories`, `private_entries`) with row-level security so each account
      can only ever see its own data, plus the `match_journal_entries` /
      `match_chat_history` vector search functions chat uses for retrieval.
+     `0006_sprint5_integrations.sql` (Google Calendar/notifications) and
+     `0008_response_quality_log.sql` have no extra setup and can be run
+     straight from the SQL editor too; `0007_pg_cron_daily_checkin.sql`
+     needs a manual edit first — see "Scheduling the daily notification
+     sweep" below.
+   - Also run `0009_self_concept.sql` (SQL editor, no extra setup) — it
+     creates the `self_concept` table the Self-Concept Layer (PRD v1.6
+     Part 2) reads and writes, and drops
+     `profiles.personality_emergence_unlocked`, which it replaces with a
+     graduated per-dimension score in `self_concept.confidence_scores`.
    - Deploy the Edge Functions and set their Groq secret:
      ```bash
      npx supabase login
@@ -64,19 +78,24 @@ sync, or context injection exists. Charts land in a later sprint.
 
 3. **Get a Groq API key** from the
    [Groq Console](https://console.groq.com/keys) — free tier, no credit card.
+   Powers the conversation analyzer and intent classifier only.
 
-4. **Get a Tavily API key** from [tavily.com](https://tavily.com) — free
+4. **Get a Google AI Studio (Gemini) API key** from
+   [aistudio.google.com/apikey](https://aistudio.google.com/apikey) — free
+   tier. Powers the main chat response (`gemini-1.5-flash`).
+
+5. **Get a Tavily API key** from [tavily.com](https://tavily.com) — free
    tier, 1000 searches/month. Only used when the user explicitly confirms a
    search in chat.
 
-5. **Configure environment variables**
+6. **Configure environment variables**
 
    ```bash
    cp .env.example .env
    ```
 
-   Fill in `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `GROQ_API_KEY`, and
-   `TAVILY_API_KEY`.
+   Fill in `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `GROQ_API_KEY`,
+   `GOOGLE_AI_API_KEY`, and `TAVILY_API_KEY`.
 
 6. **Run the app**
 
@@ -183,10 +202,10 @@ api/
   preserved as a URL via a `vercel.json` rewrite to `/api/auth`, since
   that path is registered as the redirect_uri in Google Cloud Console and
   changing it there isn't an option this consolidation should force.)
-  chat.ts                     Chat: memory injection, vector search, calendar, Conversation Engine
-                                (analyzer -> single main-model call -> therapy-speak filter, PRD v1.6 —
-                                exactly 2 Groq calls/message, 3 if the filter triggers a regeneration,
-                                to stay well under the Groq free tier's 1,000 requests/day)
+  chat.ts                     Chat: memory injection, vector search, calendar, self_concept,
+                                Conversation Engine (analyzer on Groq -> single main-model call on
+                                Gemini -> therapy-speak filter, regenerating on Gemini once if it
+                                triggers, PRD v1.6) + the Reflection feature ("reflect me")
   classify-intent.ts          gpt-oss-20b pre-check: on_topic / off_topic / search_needed / calendar_event
   search.ts                   Tavily search, only called on explicit user confirmation
   journal.ts                   action: reflect | prompt | turn-into-journal | distill-to-snap | vision-extract
@@ -214,7 +233,11 @@ api/
                                  json_validate_failed on this schema's size (PRD v1.6)
   _lib/responseQuality.ts      Multi-message JSON parsing + therapy-speak string scoring
                                  (no API call) for the single main-model response (PRD v1.6)
-  _lib/groq.ts                Groq chat wrapper — primary/fallback/classifier/vision, streaming
+  _lib/groq.ts                Groq chat wrapper — classifier/vision, streaming (analyzer only; the
+                                main chat response moved to Gemini, see _lib/gemini.ts, PRD v1.6)
+  _lib/gemini.ts               Gemini (gemini-1.5-flash) wrapper for the main chat response —
+                                Groq's 8,000 TPM free-tier limit was too small for this app's
+                                injected context; Gemini has a 1M token window instead (PRD v1.6)
   _lib/systemPrompt.ts        IDENTITY_BLOCK only — used by onboarding.ts's handleFinalize
                                 extraction call, which isn't a conversational reply
 supabase/
@@ -231,9 +254,13 @@ supabase/
   migrations/0008_response_quality_log.sql    response_quality_log — the response actually sent,
                                                its therapy-speak score, and whether it needed a
                                                regeneration; write-only, fine-tuning-dataset signal (PRD v1.6)
+  migrations/0009_self_concept.sql            self_concept — declared/observed identity, tensions,
+                                               evolution over time, confidence_scores, interaction_memory;
+                                               drops profiles.personality_emergence_unlocked (PRD v1.6 Part 2)
   functions/embed-text/index.ts               gte-small embedding for arbitrary text
   functions/embed-entry/index.ts              Embeds + stores on a specific row's embedding column
-  functions/extract-patterns/index.ts         Updates pattern_extractions + typed memories (Groq)
+  functions/extract-patterns/index.ts         Updates pattern_extractions + typed memories (Groq), plus a
+                                               third pass updating self_concept (PRD v1.6 Part 2)
   functions/daily-checkin/index.ts            pg_cron-invoked: decides who needs a notification,
                                                personalizes via Groq, delivers via /api/notifications
 public/
@@ -243,10 +270,10 @@ public/
 
 ## Security notes
 
-- The Groq, Tavily, and Google OAuth credentials live only in Vercel's server
-  environment (`GROQ_API_KEY`, `TAVILY_API_KEY`, `GOOGLE_CLIENT_ID`,
-  `GOOGLE_CLIENT_SECRET`, no `VITE_` prefix) and are never sent to the
-  browser. `VAPID_PRIVATE_KEY` is the same — only `VAPID_PUBLIC_KEY` has a
+- The Groq, Gemini, Tavily, and Google OAuth credentials live only in
+  Vercel's server environment (`GROQ_API_KEY`, `GOOGLE_AI_API_KEY`,
+  `TAVILY_API_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, no `VITE_`
+  prefix) and are never sent to the browser. `VAPID_PRIVATE_KEY` is the same — only `VAPID_PUBLIC_KEY` has a
   `VITE_`-prefixed twin, because the public half of a VAPID key pair is
   meant to reach the browser (it's the Web Push `applicationServerKey`).
 - Every table has row-level security scoped to `auth.uid()`, so one account

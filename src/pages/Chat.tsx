@@ -20,6 +20,15 @@ interface UIMessage {
   feltRight?: boolean
   /** Off-topic bounce shown locally — never sent to the model, never persisted. */
   ephemeral?: boolean
+  /**
+   * The chat_history row id api/chat.ts persisted this response under —
+   * distinct from `id` (a client-generated React key, since one row can
+   * render as several bubbles for a multi-message reply). Lets a later
+   * "felt right" tap record response_signals.chat_message_id against the
+   * exact response it's reacting to (PRD v1.6 Part 2, self_concept's
+   * interaction_memory).
+   */
+  dbMessageId?: string
 }
 
 interface ClassifyResult {
@@ -117,12 +126,15 @@ export function Chat() {
   // Renders a multi-message response (Conversation Engine, PRD 7.0) as
   // separate bubbles appearing one after another with natural delays,
   // the way a person sends a few texts in a row rather than one block.
-  const renderMultiMessages = async (msgs: { text: string; delay: number }[]) => {
+  // All bubbles from one turn share the same dbMessageId — they're split
+  // client-side for display, but api/chat.ts persisted them as a single
+  // chat_history row.
+  const renderMultiMessages = async (msgs: { text: string; delay: number }[], dbMessageId?: string) => {
     for (const m of msgs) {
       setWaitingForNext(true)
       await new Promise((resolve) => setTimeout(resolve, Math.min(Math.max(m.delay, 0), 4000)))
       setWaitingForNext(false)
-      setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: 'assistant', content: m.text }])
+      setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: 'assistant', content: m.text, dbMessageId }])
     }
   }
 
@@ -148,7 +160,7 @@ export function Chat() {
         if (!response.ok || !Array.isArray(data?.messages)) {
           throw new Error(data?.error ?? 'Chat request failed')
         }
-        await renderMultiMessages(data.messages)
+        await renderMultiMessages(data.messages, data.assistantMessageId)
         return
       }
 
@@ -158,7 +170,8 @@ export function Chat() {
       }
 
       const assistantId = crypto.randomUUID()
-      setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '' }])
+      const dbMessageId = response.headers.get('X-Message-Id') ?? undefined
+      setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', dbMessageId }])
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       for (;;) {
@@ -285,8 +298,13 @@ export function Chat() {
 
   const markFeltRight = async (messageId: string) => {
     if (!user) return
+    const target = messages.find((m) => m.id === messageId)
     setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, feltRight: true } : m)))
-    await supabase.from('response_signals').insert({ user_id: user.id, felt_right: true })
+    await supabase.from('response_signals').insert({
+      user_id: user.id,
+      felt_right: true,
+      chat_message_id: target?.dbMessageId ?? null,
+    })
   }
 
   return (

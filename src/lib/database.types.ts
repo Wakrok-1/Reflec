@@ -34,7 +34,6 @@ export type Profile = {
   patterns: unknown[]
   summary_memory: string
   onboarding_completed_at: string | null
-  personality_emergence_unlocked: boolean
   notification_prefs: NotificationPrefs
   push_subscription: PushSubscriptionJson | null
   created_at: string
@@ -264,6 +263,61 @@ export type ResponseQualityLog = {
   created_at: string
 }
 
+// Self-Concept Layer (PRD v1.6 Part 2, migration 0009). Replaces the old
+// profiles.personality_emergence_unlocked boolean gate — familiarity is
+// now graduated per confidence_scores dimension rather than one on/off
+// switch. Populated by the extract-patterns Edge Function's third pass;
+// read (never written) by contextBuilder.ts as the <self_concept> block
+// and consumed by api/chat.ts's Reflection feature ("reflect me").
+export type DeclaredSelfEntry = {
+  value: string
+  source: 'user_declared'
+}
+
+export type ObservedSelfPattern = {
+  text: string
+  confidence: number
+}
+
+export type ConfidenceScores = {
+  surface: number
+  values: number
+  behaviour: number
+  emotional_patterns: number
+  self_concept: number
+  deep_identity: number
+}
+
+export type InteractionMemoryEntry = {
+  text: string
+  created_at: string
+}
+
+export type InteractionMemory = {
+  callbacks_worked: InteractionMemoryEntry[]
+  interpretations_rejected: InteractionMemoryEntry[]
+  topics_that_expand: InteractionMemoryEntry[]
+  topics_that_close: InteractionMemoryEntry[]
+  humour_landed: InteractionMemoryEntry[]
+  response_styles_preferred: InteractionMemoryEntry[]
+}
+
+export type IdentityEvolutionPeriod = {
+  period: string
+  description: string
+}
+
+export type SelfConcept = {
+  user_id: string
+  declared_self: Record<string, DeclaredSelfEntry>
+  observed_self: { patterns: ObservedSelfPattern[] }
+  identity_tensions: string[]
+  identity_evolution: IdentityEvolutionPeriod[]
+  confidence_scores: ConfidenceScores
+  interaction_memory: InteractionMemory
+  updated_at: string
+}
+
 // supabase-js's generic client requires each table to carry a
 // `Relationships` array and the schema to declare `Views`/`Functions`
 // (see @supabase/postgrest-js's GenericTable/GenericSchema) — otherwise
@@ -341,6 +395,7 @@ export type Database = {
         ResponseQualityLog,
         Partial<ResponseQualityLog> & { user_id: string; response_text: string }
       >
+      self_concept: Table<SelfConcept, Partial<SelfConcept> & { user_id: string }>
     }
     Views: Record<string, never>
     Functions: {

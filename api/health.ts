@@ -1,14 +1,15 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { verifyUser } from './_lib/verifyUser'
 import { createUserScopedClient } from './_lib/supabaseServer'
-import { callGroq, GROQ_PRIMARY_MODEL, type GroqMessage } from './_lib/groq'
+import { callGroq } from './_lib/groq'
+import { callGemini, type GeminiMessage } from './_lib/gemini'
 import {
   analyzeConversation,
   buildConversationDirective,
   buildMultiMessageInstruction,
 } from './_lib/conversationAnalyzer'
 import { buildActiveGoalsSummary, estimateTokens, renderSystemPrompt, type MemoryBundle } from '../src/lib/contextBuilder'
-import type { PatternExtraction, Profile } from '../src/lib/database.types'
+import type { PatternExtraction, Profile, SelfConcept } from '../src/lib/database.types'
 
 type HealthAction = 'conversation-debug'
 
@@ -37,7 +38,8 @@ async function handleConnectivityCheck(apiKey: string, res: VercelResponse) {
 
 // Development-only introspection into the Conversation Engine (PRD 7.0).
 // Runs the exact same analyzer -> directive -> main-model pipeline
-// api/chat.ts uses, for a single test message, and returns every
+// api/chat.ts uses (analyzer on Groq, main response on Gemini — see
+// api/_lib/gemini.ts), for a single test message, and returns every
 // intermediate value instead of just the final reply — so multi-message
 // behavior can be verified directly instead of by reading Vercel logs.
 // Vector search and calendar are deliberately left out of the context
@@ -46,24 +48,30 @@ async function handleConnectivityCheck(apiKey: string, res: VercelResponse) {
 // round trip on a debug-only call.
 async function handleConversationDebug(
   res: VercelResponse,
-  apiKey: string,
+  groqApiKey: string,
   accessToken: string,
   userId: string,
   testMessage: string,
 ) {
   const supabase = createUserScopedClient(accessToken)
-  const [{ data: profile, error: profileError }, { data: patterns }, { data: summaries }, { data: goalRows }] =
-    await Promise.all([
-      supabase.from('profiles').select('*').eq('id', userId).single(),
-      supabase.from('pattern_extractions').select('*').eq('user_id', userId).maybeSingle(),
-      supabase
-        .from('memory_summaries')
-        .select('*')
-        .eq('user_id', userId)
-        .order('period_end', { ascending: false })
-        .limit(20),
-      supabase.from('goals').select('*').eq('user_id', userId).in('type', ['big_goal', 'increment']),
-    ])
+  const [
+    { data: profile, error: profileError },
+    { data: patterns },
+    { data: summaries },
+    { data: goalRows },
+    { data: selfConcept },
+  ] = await Promise.all([
+    supabase.from('profiles').select('*').eq('id', userId).single(),
+    supabase.from('pattern_extractions').select('*').eq('user_id', userId).maybeSingle(),
+    supabase
+      .from('memory_summaries')
+      .select('*')
+      .eq('user_id', userId)
+      .order('period_end', { ascending: false })
+      .limit(20),
+    supabase.from('goals').select('*').eq('user_id', userId).in('type', ['big_goal', 'increment']),
+    supabase.from('self_concept').select('*').eq('user_id', userId).maybeSingle(),
+  ])
 
   if (profileError || !profile) {
     res.status(500).json({ error: 'Could not load user profile' })
@@ -77,35 +85,32 @@ async function handleConversationDebug(
     vectorHits: [],
     activeGoals: buildActiveGoalsSummary(goalRows ?? []),
     upcomingEvents: undefined,
+    selfConcept: (selfConcept as SelfConcept) ?? null,
   }
   const { prompt: systemPrompt } = renderSystemPrompt(bundle)
 
-  const testTurn: GroqMessage[] = [{ role: 'user', content: testMessage }]
-  const analysis = await analyzeConversation(apiKey, testTurn)
+  const testTurn: GeminiMessage[] = [{ role: 'user', content: testMessage }]
+  const analysis = await analyzeConversation(groqApiKey, testTurn)
   const directive = buildConversationDirective(analysis)
 
-  const groqMessages: GroqMessage[] = [
-    { role: 'system', content: systemPrompt },
-    { role: 'system', content: directive },
-  ]
+  const systemPromptParts = [systemPrompt, directive]
   if (analysis.multi_message) {
-    groqMessages.push({ role: 'system', content: buildMultiMessageInstruction(analysis) })
+    systemPromptParts.push(buildMultiMessageInstruction(analysis))
   }
-  groqMessages.push(...testTurn)
+  const geminiSystemPrompt = systemPromptParts.join('\n\n')
 
-  const contextTokenCount = estimateTokens(groqMessages.map((m) => m.content).join('\n'))
+  const contextTokenCount = estimateTokens([geminiSystemPrompt, ...testTurn.map((m) => m.content)].join('\n'))
 
   let rawModelResponse: string
   try {
-    rawModelResponse = await callGroq(apiKey, {
-      model: GROQ_PRIMARY_MODEL,
-      jsonMode: analysis.multi_message,
+    rawModelResponse = await callGemini({
+      systemPrompt: geminiSystemPrompt,
+      messages: testTurn,
       maxTokens: analysis.multi_message ? 500 : 800,
       temperature: analysis.multi_message ? 0.85 : 0.8,
-      messages: groqMessages,
     })
   } catch (err) {
-    res.status(502).json({ error: 'Groq API request failed', detail: String(err) })
+    res.status(502).json({ error: 'Gemini API request failed', detail: String(err) })
     return
   }
 

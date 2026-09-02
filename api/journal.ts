@@ -93,6 +93,7 @@ async function handleReflect(req: VercelRequest, res: VercelResponse, body: Jour
     vectorHits: [],
     activeGoals: [],
     upcomingEvents: undefined,
+    selfConcept: null,
   }
   const { prompt: systemPrompt } = renderSystemPrompt(bundle)
 
