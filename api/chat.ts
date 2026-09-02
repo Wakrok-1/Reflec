@@ -304,7 +304,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const responseMaxTokens = reflectionRequested ? 1200 : analysis.multi_message ? 500 : 800
 
-    // Single main-model call (PRD v1.6). Gemini 1.5 Flash's 1M token
+    // Single main-model call (PRD v1.6). Gemini's 1M token
     // context and generous free tier are why this moved off Groq — the
     // 8,000 TPM ceiling there was structurally too small for this app's
     // injected context (system prompt alone is ~2,880 tokens), not

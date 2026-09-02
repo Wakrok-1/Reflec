@@ -15,7 +15,9 @@ sync, or context injection exists. Charts land in a later sprint.
 - Frontend: React + Tailwind CSS (Vite)
 - Backend / DB / Auth: Supabase (Postgres + RLS + pgvector + pg_cron)
 - Embeddings: Supabase built-in `gte-small` (384 dims), via Supabase Edge Functions
-- AI: main chat responses via Google AI Studio's Gemini (`gemini-1.5-flash`)
+- AI: main chat responses via Google AI Studio's Gemini (`gemini-3.7-flash`
+  as of this writing — Google retires specific model versions every few
+  months; see `api/_lib/gemini.ts` if this needs bumping again)
   — Groq's free-tier 8,000 TPM limit was structurally too small for this
   app's injected context (PRD v1.6). The conversation analyzer and intent
   classifier stay on Groq (`openai/gpt-oss-20b`) since their own footprint
@@ -82,7 +84,8 @@ sync, or context injection exists. Charts land in a later sprint.
 
 4. **Get a Google AI Studio (Gemini) API key** from
    [aistudio.google.com/apikey](https://aistudio.google.com/apikey) — free
-   tier. Powers the main chat response (`gemini-1.5-flash`).
+   tier. Powers the main chat response — see `api/_lib/gemini.ts` for the
+   exact model currently pinned.
 
 5. **Get a Tavily API key** from [tavily.com](https://tavily.com) — free
    tier, 1000 searches/month. Only used when the user explicitly confirms a
@@ -235,9 +238,11 @@ api/
                                  (no API call) for the single main-model response (PRD v1.6)
   _lib/groq.ts                Groq chat wrapper — classifier/vision, streaming (analyzer only; the
                                 main chat response moved to Gemini, see _lib/gemini.ts, PRD v1.6)
-  _lib/gemini.ts               Gemini (gemini-1.5-flash) wrapper for the main chat response —
-                                Groq's 8,000 TPM free-tier limit was too small for this app's
-                                injected context; Gemini has a 1M token window instead (PRD v1.6)
+  _lib/gemini.ts               Gemini wrapper for the main chat response — Groq's 8,000 TPM
+                                free-tier limit was too small for this app's injected context;
+                                Gemini has a 1M token window instead (PRD v1.6). Pin an explicit
+                                model, not a `-latest` alias; Google retires versions every few
+                                months (gemini-1.5-flash already has, once)
   _lib/systemPrompt.ts        IDENTITY_BLOCK only — used by onboarding.ts's handleFinalize
                                 extraction call, which isn't a conversational reply
 supabase/

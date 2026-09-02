@@ -14,7 +14,7 @@ import type { Goal, PatternExtraction, Profile, MemorySummary, SelfConcept } fro
 // Groq's 8,000 TPM free-tier ceiling. That effort was abandoned — the
 // static system prompt alone is already ~2,880 tokens, so no amount of
 // memory trimming got the total under the limit — in favor of moving the
-// main model call to Gemini 1.5 Flash (api/_lib/gemini.ts), which has a
+// main model call to Gemini (api/_lib/gemini.ts), which has a
 // 1M token context and no comparable TPM wall. These budgets are back to
 // their original, more generous sizes.
 const SUMMARY_CUMULATIVE_BUDGET = 1200 // 800 (hot) + 400 (summaries)

@@ -4,13 +4,22 @@
 // app's injected-context size: the system prompt alone is ~2,880 tokens
 // before any memory or conversation history is added, so no amount of
 // per-section trimming got the full request under the limit. Gemini
-// 1.5 Flash has a 1M token context window and a much more generous free
-// tier, so the main response call moves here entirely. The conversation
-// analyzer pre-call stays on Groq (openai/gpt-oss-20b) — its own token
-// footprint was never the problem.
+// has a 1M token context window and a much more generous free tier, so
+// the main response call moves here entirely. The conversation analyzer
+// pre-call stays on Groq (openai/gpt-oss-20b) — its own token footprint
+// was never the problem.
+//
+// gemini-1.5-flash was retired by Google (the whole 1.5 family now 404s
+// on generateContent) — pinned to the current GA flash-tier model
+// instead. Google's own guidance is to pin an explicit stable model
+// name in production rather than a `-latest` alias (which can hot-swap
+// underlying behavior without a code change), so expect to need to bump
+// this again whenever Google retires this one too — check
+// https://ai.google.dev/gemini-api/docs/models for the current GA name
+// if this starts 404ing again.
 import { GoogleGenerativeAI } from '@google/generative-ai'
 
-const GEMINI_MODEL = 'gemini-1.5-flash'
+const GEMINI_MODEL = 'gemini-3.7-flash'
 
 export interface GeminiMessage {
   role: 'user' | 'assistant'
