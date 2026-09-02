@@ -19,6 +19,7 @@ import { getValidAccessToken, listUpcomingEvents } from './_lib/googleCalendar'
 import {
   buildActiveGoalsSummary,
   renderSystemPrompt,
+  estimateTokens,
   type ActiveGoalSummary,
   type MemoryBundle,
   type UpcomingCalendarEvent,
@@ -259,7 +260,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       upcomingEvents,
     }
 
-    const { prompt: systemPrompt } = renderSystemPrompt(bundle)
+    const { prompt: systemPrompt, breakdown } = renderSystemPrompt(bundle)
 
     const groqMessages: GroqMessage[] = [{ role: 'system', content: systemPrompt }]
     if (body.searchContext) {
@@ -275,6 +276,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       groqMessages.push({ role: 'system', content: buildMultiMessageInstruction(analysis) })
     }
     groqMessages.push(...body.messages)
+
+    // TEMP DEBUG (context token budget investigation) — Groq's 8,000 TPM
+    // free-tier limit was being hit on the very first call_main_model
+    // request. Logs every injected section's estimated size so production
+    // traffic shows which section(s) actually drive total prompt size,
+    // rather than guessing. Remove once the 429s are confirmed gone.
+    const systemPromptTokens = estimateTokens(systemPrompt)
+    const conversationHistoryTokens = body.messages.reduce((sum, m) => sum + estimateTokens(m.content), 0)
+    const totalTokens = groqMessages.reduce((sum, m) => sum + estimateTokens(m.content), 0)
+    console.log('TEMP DEBUG context token budget', {
+      profile_tokens: breakdown.profile_tokens,
+      patterns_tokens: breakdown.patterns_tokens,
+      taste_tokens: breakdown.taste_tokens,
+      summaries_tokens: breakdown.summaries_tokens,
+      vector_hits_tokens: breakdown.vector_hits_tokens,
+      goals_tokens: breakdown.goals_tokens,
+      calendar_tokens: breakdown.calendar_tokens,
+      system_prompt_tokens: systemPromptTokens,
+      conversation_history_tokens: conversationHistoryTokens,
+      total_tokens: totalTokens,
+    })
 
     const responseMaxTokens = analysis.multi_message ? 500 : 800
 
@@ -315,13 +337,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         messages: groqMessages,
       })
     } catch (err) {
-      const salvaged = salvageFailedGeneration(err, analysis, 'call_main_model')
-      if (salvaged === null) {
-        console.error('chat failed at stage "call_main_model"', err)
-        res.status(502).json({ error: 'Groq API request failed', detail: String(err) })
-        return
+      // Groq's 429 error text names a specific retry-after duration for
+      // this TPM window (observed: "try again in 6.855s") — a single
+      // 7-second wait then one retry is cheap relative to Vercel's
+      // function timeout and turns a hard failure into a slow-but-working
+      // turn for the common "just over the limit" case, without the
+      // fallback-cascade risk disableFallback above already guards against.
+      if (err instanceof GroqError && err.status === 429) {
+        console.error('chat: call_main_model hit 429, waiting 7s and retrying once', err.detail)
+        await new Promise((resolve) => setTimeout(resolve, 7000))
+        try {
+          raw = await callGroq(apiKey, {
+            model: GROQ_PRIMARY_MODEL,
+            jsonMode: analysis.multi_message,
+            maxTokens: responseMaxTokens,
+            temperature: 0.85,
+            reasoningEffort: 'low',
+            disableFallback: true,
+            messages: groqMessages,
+          })
+        } catch (retryErr) {
+          const salvaged = salvageFailedGeneration(retryErr, analysis, 'call_main_model retry')
+          if (salvaged === null) {
+            console.error('chat failed at stage "call_main_model" (after 429 retry)', retryErr)
+            res.status(429).json({ error: "Give me a second — I'm a little overloaded right now. Try again in a moment." })
+            return
+          }
+          raw = salvaged
+        }
+      } else {
+        const salvaged = salvageFailedGeneration(err, analysis, 'call_main_model')
+        if (salvaged === null) {
+          console.error('chat failed at stage "call_main_model"', err)
+          res.status(502).json({ error: 'Groq API request failed', detail: String(err) })
+          return
+        }
+        raw = salvaged
       }
-      raw = salvaged
     }
 
     // Therapy-speak post-filter (PRD v1.6): plain string scoring, no
