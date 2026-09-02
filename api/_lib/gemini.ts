@@ -10,16 +10,24 @@
 // was never the problem.
 //
 // gemini-1.5-flash was retired by Google (the whole 1.5 family now 404s
-// on generateContent) — pinned to the current GA flash-tier model
-// instead. Google's own guidance is to pin an explicit stable model
-// name in production rather than a `-latest` alias (which can hot-swap
+// on generateContent) — pinned to a current GA flash-tier model instead.
+// Google's own guidance is to pin an explicit stable model name in
+// production rather than a `-latest` alias (which can hot-swap
 // underlying behavior without a code change), so expect to need to bump
-// this again whenever Google retires this one too — check
-// https://ai.google.dev/gemini-api/docs/models for the current GA name
-// if this starts 404ing again.
+// these again whenever Google retires them too — check
+// https://ai.google.dev/gemini-api/docs/models for current GA names if
+// this starts 404ing again.
 import { GoogleGenerativeAI, GoogleGenerativeAIFetchError } from '@google/generative-ai'
 
-const GEMINI_MODEL = 'gemini-3.7-flash'
+// GEMINI_PRIMARY_MODEL is the most recently GA'd flash model — brand new
+// releases see a demand spike right after launch (confirmed in
+// production: two consecutive 503 "experiencing high demand" responses
+// on gemini-3.7-flash, seconds apart, right after its GA). GEMINI_FALLBACK_MODEL
+// is an older, already-settled GA release, used only when the primary is
+// still failing after its own retry — different model, so a demand spike
+// on one doesn't take out the other.
+const GEMINI_PRIMARY_MODEL = 'gemini-3.7-flash'
+const GEMINI_FALLBACK_MODEL = 'gemini-3.5-flash'
 
 // Google's API returns 503 ("This model is currently experiencing high
 // demand... try again later") fairly routinely, and 429 for genuine rate
@@ -74,6 +82,41 @@ function toGeminiHistory(messages: GeminiMessage[]): GeminiHistoryTurn[] {
   return history
 }
 
+function isRetryableGeminiError(err: unknown): err is GoogleGenerativeAIFetchError {
+  return err instanceof GoogleGenerativeAIFetchError && err.status !== undefined && RETRYABLE_STATUS_CODES.has(err.status)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function generateWithModel(
+  apiKey: string,
+  modelName: string,
+  systemPrompt: string,
+  history: GeminiHistoryTurn[],
+  lastMessage: string,
+  maxTokens: number,
+  temperature: number,
+): Promise<string> {
+  const genAI = new GoogleGenerativeAI(apiKey)
+  const model = genAI.getGenerativeModel({
+    model: modelName,
+    systemInstruction: systemPrompt,
+    generationConfig: {
+      maxOutputTokens: maxTokens,
+      temperature,
+    },
+  })
+  // Fresh ChatSession per attempt — safe to recreate for a retry/fallback
+  // since sendMessage only writes to a session's own internal history
+  // after a successful response (checked against the SDK's source), so
+  // nothing here carries state between attempts that needs preserving.
+  const chat = model.startChat({ history })
+  const result = await chat.sendMessage(lastMessage)
+  return result.response.text()
+}
+
 export async function callGemini({
   systemPrompt,
   messages,
@@ -88,35 +131,31 @@ export async function callGemini({
     throw new Error('callGemini requires at least one message')
   }
 
-  const genAI = new GoogleGenerativeAI(apiKey)
-  const model = genAI.getGenerativeModel({
-    model: GEMINI_MODEL,
-    systemInstruction: systemPrompt,
-    generationConfig: {
-      maxOutputTokens: maxTokens,
-      temperature,
-    },
-  })
-
   // Gemini's chat history takes every turn except the last as context, and
   // the last one as the message being sent — the same shape callGroq's
   // messages array had (system prompt aside, which Gemini takes out of
   // band via systemInstruction rather than as a message in this list).
   const history = toGeminiHistory(messages.slice(0, -1))
-
   const lastMessage = messages[messages.length - 1].content
 
-  const chat = model.startChat({ history })
+  const attempt = (modelName: string) =>
+    generateWithModel(apiKey, modelName, systemPrompt, history, lastMessage, maxTokens, temperature)
+
   try {
-    const result = await chat.sendMessage(lastMessage)
-    return result.response.text()
+    return await attempt(GEMINI_PRIMARY_MODEL)
   } catch (err) {
-    if (!(err instanceof GoogleGenerativeAIFetchError) || err.status === undefined || !RETRYABLE_STATUS_CODES.has(err.status)) {
-      throw err
+    if (!isRetryableGeminiError(err)) throw err
+    console.error(`Gemini ${GEMINI_PRIMARY_MODEL} failed with a transient ${err.status}, retrying once after ${RETRY_DELAY_MS}ms`, err.message)
+    await sleep(RETRY_DELAY_MS)
+    try {
+      return await attempt(GEMINI_PRIMARY_MODEL)
+    } catch (retryErr) {
+      if (!isRetryableGeminiError(retryErr)) throw retryErr
+      console.error(
+        `Gemini ${GEMINI_PRIMARY_MODEL} still failing after retry (${retryErr.status}), falling back to ${GEMINI_FALLBACK_MODEL}`,
+        retryErr.message,
+      )
+      return await attempt(GEMINI_FALLBACK_MODEL)
     }
-    console.error(`Gemini request failed with a transient ${err.status}, retrying once after ${RETRY_DELAY_MS}ms`, err.message)
-    await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
-    const result = await chat.sendMessage(lastMessage)
-    return result.response.text()
   }
 }

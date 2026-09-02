@@ -16,9 +16,10 @@ sync, or context injection exists. Charts land in a later sprint.
 - Backend / DB / Auth: Supabase (Postgres + RLS + pgvector + pg_cron)
 - Embeddings: Supabase built-in `gte-small` (384 dims), via Supabase Edge Functions
 - AI: main chat responses via Google AI Studio's Gemini (`gemini-3.7-flash`
-  as of this writing — Google retires specific model versions every few
-  months; see `api/_lib/gemini.ts` if this needs bumping again)
-  — Groq's free-tier 8,000 TPM limit was structurally too small for this
+  as of this writing, falling back to the older, less demand-spiked
+  `gemini-3.5-flash` on a sustained 503 — Google retires specific model
+  versions every few months; see `api/_lib/gemini.ts` if this needs
+  bumping again) — Groq's free-tier 8,000 TPM limit was structurally too small for this
   app's injected context (PRD v1.6). The conversation analyzer and intent
   classifier stay on Groq (`openai/gpt-oss-20b`) since their own footprint
   was never the problem. Vercel serverless functions only — both keys

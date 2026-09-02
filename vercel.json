@@ -2,6 +2,9 @@
   "framework": "vite",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "functions": {
+    "api/chat.ts": { "maxDuration": 30 }
+  },
   "rewrites": [
     { "source": "/api/google-callback", "destination": "/api/auth" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
