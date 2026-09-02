@@ -1,8 +1,13 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { verifyUser } from './_lib/verifyUser'
 import { createUserScopedClient } from './_lib/supabaseServer'
-import { callGroq, GROQ_PRIMARY_MODEL, type GroqMessage } from './_lib/groq'
-import { analyzeConversation, buildConversationDirective, buildMultiMessageInstruction } from './_lib/conversationAnalyzer'
+import { callGroq, GroqError, GROQ_PRIMARY_MODEL, type GroqMessage } from './_lib/groq'
+import {
+  analyzeConversation,
+  buildConversationDirective,
+  buildMultiMessageInstruction,
+  type ConversationAnalysis,
+} from './_lib/conversationAnalyzer'
 import {
   parseMultiMessageJson,
   extractPlainText,
@@ -146,6 +151,25 @@ async function runVectorSearch(
   return { embedding, vectorHits }
 }
 
+// gpt-oss sometimes ignores the multi-message JSON-array instruction and
+// just writes a normal reply instead of {"messages": [...]} — Groq's
+// response_format: json_object then rejects it with a 400
+// json_validate_failed, but the error body still hands back the model's
+// actual generated text via failed_generation. Salvaging that instead of
+// failing the whole turn means the user still gets a real, on-topic
+// response — just one bubble instead of several. Mutates
+// analysis.multi_message to false so every step downstream of this call
+// (plain-text extraction, therapy-speak scoring, the final response
+// shape) treats the rest of this turn as single-message.
+function salvageFailedGeneration(err: unknown, analysis: ConversationAnalysis, logContext: string): string | null {
+  if (err instanceof GroqError && err.failedGeneration && err.failedGeneration.trim().length > 0) {
+    console.error(`chat: ${logContext} failed JSON validation, salvaging failed_generation as a single message`, err.detail)
+    analysis.multi_message = false
+    return err.failedGeneration
+  }
+  return null
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed' })
@@ -277,9 +301,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         messages: groqMessages,
       })
     } catch (err) {
-      console.error('chat failed at stage "call_main_model"', err)
-      res.status(502).json({ error: 'Groq API request failed', detail: String(err) })
-      return
+      const salvaged = salvageFailedGeneration(err, analysis, 'call_main_model')
+      if (salvaged === null) {
+        console.error('chat failed at stage "call_main_model"', err)
+        res.status(502).json({ error: 'Groq API request failed', detail: String(err) })
+        return
+      }
+      raw = salvaged
     }
 
     // Therapy-speak post-filter (PRD v1.6): plain string scoring, no
@@ -312,9 +340,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           messages: [...groqMessages, { role: 'system', content: TOO_THERAPEUTIC_DIRECTIVE }],
         })
       } catch (err) {
-        console.error('chat failed at stage "therapy_speak_filter" (regeneration)', err)
-        res.status(502).json({ error: 'Groq API request failed', detail: String(err) })
-        return
+        const salvaged = salvageFailedGeneration(err, analysis, 'therapy_speak_filter regeneration')
+        if (salvaged === null) {
+          console.error('chat failed at stage "therapy_speak_filter" (regeneration)', err)
+          res.status(502).json({ error: 'Groq API request failed', detail: String(err) })
+          return
+        }
+        finalRaw = salvaged
       }
       finalPlain = extractPlainText(finalRaw, analysis.multi_message)
       therapySpeakScore = scoreTherapySpeak(finalPlain)

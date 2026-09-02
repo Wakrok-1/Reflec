@@ -51,10 +51,19 @@ interface CallGroqOptions {
 export class GroqError extends Error {
   status: number
   detail: string
-  constructor(status: number, detail: string) {
+  // Populated only for a 400 json_validate_failed error (jsonMode asked
+  // for structured output; the model wrote plain prose instead) — Groq
+  // hands back the model's actual generated text in this field. A caller
+  // that can sensibly use free text in place of the JSON it asked for
+  // (api/chat.ts's multi-message path) can salvage it instead of failing
+  // the request outright; most callers should just treat this as absent
+  // and fail normally.
+  failedGeneration?: string
+  constructor(status: number, detail: string, failedGeneration?: string) {
     super(`Groq API request failed (${status})`)
     this.status = status
     this.detail = detail
+    this.failedGeneration = failedGeneration
   }
 }
 
@@ -77,7 +86,14 @@ async function requestGroq(apiKey: string, model: string, options: CallGroqOptio
 
   if (!response.ok) {
     const detail = await response.text()
-    throw new GroqError(response.status, detail)
+    let failedGeneration: string | undefined
+    try {
+      const parsedDetail = JSON.parse(detail)?.error?.failed_generation
+      failedGeneration = typeof parsedDetail === 'string' ? parsedDetail : undefined
+    } catch {
+      // detail wasn't JSON, or didn't have this shape — nothing to salvage.
+    }
+    throw new GroqError(response.status, detail, failedGeneration)
   }
 
   const data = await response.json()
