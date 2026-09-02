@@ -345,7 +345,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         autoRejected,
       })
       try {
-        finalRaw = await callGroq(apiKey, {
+        const regeneratedRaw = await callGroq(apiKey, {
           model: GROQ_PRIMARY_MODEL,
           jsonMode: analysis.multi_message,
           maxTokens: responseMaxTokens,
@@ -354,20 +354,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           disableFallback: true,
           messages: [...groqMessages, { role: 'system', content: TOO_THERAPEUTIC_DIRECTIVE }],
         })
+        finalRaw = regeneratedRaw
+        finalPlain = extractPlainText(finalRaw, analysis.multi_message)
+        therapySpeakScore = scoreTherapySpeak(finalPlain)
+        autoRejected = isAutoRejectedTherapySpeak(finalPlain)
+        regenerated = true
       } catch (err) {
         const salvaged = salvageFailedGeneration(err, analysis, 'therapy_speak_filter regeneration')
-        if (salvaged === null) {
-          console.error('chat failed at stage "therapy_speak_filter" (regeneration)', err)
-          res.status(502).json({ error: 'Groq API request failed', detail: String(err) })
-          return
+        if (salvaged !== null) {
+          finalRaw = salvaged
+          finalPlain = extractPlainText(finalRaw, analysis.multi_message)
+          therapySpeakScore = scoreTherapySpeak(finalPlain)
+          autoRejected = isAutoRejectedTherapySpeak(finalPlain)
+          regenerated = true
+        } else {
+          // Regeneration is a quality improvement on top of an already-
+          // working reply, not a required step — the original response
+          // (raw/finalPlain as already computed above) is real and
+          // coherent, just flagged by the filter as too clinical. If the
+          // retry itself fails outright (e.g. a 429 on gpt-oss-120b's own
+          // token-per-minute budget, which a same-model regeneration call
+          // can trigger on its own without any fallback involved), send
+          // the original instead of turning a working turn into an error
+          // page. therapySpeakScore/autoRejected/regenerated (still
+          // false) are left as-is, so what gets logged and persisted
+          // honestly reflects that the flagged original was what shipped.
+          console.error(
+            'chat: therapy_speak_filter regeneration failed, sending the original (filter-flagged) response instead of failing the turn',
+            err,
+          )
         }
-        finalRaw = salvaged
       }
-      finalPlain = extractPlainText(finalRaw, analysis.multi_message)
-      therapySpeakScore = scoreTherapySpeak(finalPlain)
-      autoRejected = isAutoRejectedTherapySpeak(finalPlain)
-      regenerated = true
-      if (therapySpeakScore >= THERAPY_SPEAK_THRESHOLD || autoRejected) {
+      // Only worth a second log line if a regeneration actually happened
+      // and still failed the filter — the "regeneration errored outright,
+      // sent the original instead" case already logged its own reason
+      // above, and re-logging the same original score here as if a
+      // regenerated response had failed would be misleading.
+      if (regenerated && (therapySpeakScore >= THERAPY_SPEAK_THRESHOLD || autoRejected)) {
         console.error('chat: regenerated response also failed the therapy-speak filter', {
           score: therapySpeakScore,
           autoRejected,
