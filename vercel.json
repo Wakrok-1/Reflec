@@ -3,7 +3,7 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "functions": {
-    "api/chat.ts": { "maxDuration": 30 }
+    "api/chat.ts": { "maxDuration": 60 }
   },
   "rewrites": [
     { "source": "/api/google-callback", "destination": "/api/auth" },

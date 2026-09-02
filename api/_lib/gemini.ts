@@ -21,19 +21,21 @@ import { GoogleGenerativeAI, GoogleGenerativeAIFetchError } from '@google/genera
 
 // GEMINI_PRIMARY_MODEL is the most recently GA'd flash model — brand new
 // releases see a demand spike right after launch (confirmed in
-// production: two consecutive 503 "experiencing high demand" responses
-// on gemini-3.7-flash, seconds apart, right after its GA). GEMINI_FALLBACK_MODEL
-// is an older, already-settled GA release, used only when the primary is
-// still failing after its own retry — different model, so a demand spike
-// on one doesn't take out the other.
+// production: gemini-3.7-flash 503ing on several separate turns in a
+// row, not just an isolated blip). GEMINI_FALLBACK_MODEL is an older,
+// already-settled GA release, tried immediately on any retryable
+// primary failure — different model/quota, so a demand spike on one
+// doesn't take out the other, and there's no reason to pause first.
 const GEMINI_PRIMARY_MODEL = 'gemini-3.7-flash'
 const GEMINI_FALLBACK_MODEL = 'gemini-3.5-flash'
 
 // Google's API returns 503 ("This model is currently experiencing high
 // demand... try again later") fairly routinely, and 429 for genuine rate
-// limiting — both are usually gone within a couple of seconds, so one
-// retry after a short pause turns most of these into a slightly slower
-// success instead of a failed turn.
+// limiting. Both are retryable, but every second spent retrying counts
+// directly against this request's Vercel function timeout — so the
+// delayed retry below is reserved for the fallback model only, as the
+// genuine last resort, not spent re-trying a primary that's already
+// shown itself to be down.
 const RETRYABLE_STATUS_CODES = new Set([429, 503])
 const RETRY_DELAY_MS = 1500
 
@@ -160,20 +162,29 @@ export async function callGemini({
   const attempt = (modelName: string) =>
     generateWithModel(apiKey, modelName, systemPrompt, history, lastMessage, maxTokens, temperature, jsonMode)
 
+  // Go to the fallback model immediately on a retryable failure, no delay
+  // — retrying the SAME model that's already 503ing wastes a whole
+  // network round trip on an attempt that's very likely to fail again
+  // during a sustained demand spike (confirmed in production: the same
+  // primary model failing on 3+ separate turns in a row), and every
+  // second spent here counts directly against this request's Vercel
+  // function timeout. The fallback is different infrastructure/quota, so
+  // there's no reason to pause before trying it. Only the fallback gets
+  // an actual delayed retry, as the genuine last resort.
   try {
     return await attempt(GEMINI_PRIMARY_MODEL)
   } catch (err) {
     if (!isRetryableGeminiError(err)) throw err
-    console.error(`Gemini ${GEMINI_PRIMARY_MODEL} failed with a transient ${err.status}, retrying once after ${RETRY_DELAY_MS}ms`, err.message)
-    await sleep(RETRY_DELAY_MS)
+    console.error(`Gemini ${GEMINI_PRIMARY_MODEL} failed with a ${err.status}, falling back to ${GEMINI_FALLBACK_MODEL}`, err.message)
     try {
-      return await attempt(GEMINI_PRIMARY_MODEL)
-    } catch (retryErr) {
-      if (!isRetryableGeminiError(retryErr)) throw retryErr
+      return await attempt(GEMINI_FALLBACK_MODEL)
+    } catch (fallbackErr) {
+      if (!isRetryableGeminiError(fallbackErr)) throw fallbackErr
       console.error(
-        `Gemini ${GEMINI_PRIMARY_MODEL} still failing after retry (${retryErr.status}), falling back to ${GEMINI_FALLBACK_MODEL}`,
-        retryErr.message,
+        `Gemini ${GEMINI_FALLBACK_MODEL} also failed with a ${fallbackErr.status}, retrying once after ${RETRY_DELAY_MS}ms`,
+        fallbackErr.message,
       )
+      await sleep(RETRY_DELAY_MS)
       return await attempt(GEMINI_FALLBACK_MODEL)
     }
   }
