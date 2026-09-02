@@ -289,6 +289,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // against gpt-oss-20b — the same pool the analyzer just drew from —
     // which can immediately 429 again rather than actually recovering.
     // Fail with the original 429 instead of compounding it.
+    //
+    // reasoningEffort: 'low' — the same gpt-oss "reasoning burns the
+    // whole token budget, content ends up empty" failure mode that hit
+    // the analyzer (fixed there earlier) also hits the main model on the
+    // multi-message JSON path: a 400 json_validate_failed with
+    // failed_generation: "" — no prose to salvage, because the model
+    // never got past its own internal chain-of-thought to write anything
+    // into the answer channel at all. This wasn't applied here originally
+    // (kept off deliberately, on the theory a conversational reply might
+    // benefit from more deliberation than a mechanical classifier) —
+    // but a response that hard-fails is worse than one reasoned a little
+    // less deeply, and 'low' doesn't reduce the model's capability to
+    // write in character, only how much it deliberates before doing so.
     stage = 'call_main_model'
     let raw: string
     try {
@@ -297,6 +310,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         jsonMode: analysis.multi_message,
         maxTokens: responseMaxTokens,
         temperature: 0.85,
+        reasoningEffort: 'low',
         disableFallback: true,
         messages: groqMessages,
       })
@@ -336,6 +350,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           jsonMode: analysis.multi_message,
           maxTokens: responseMaxTokens,
           temperature: 0.85,
+          reasoningEffort: 'low',
           disableFallback: true,
           messages: [...groqMessages, { role: 'system', content: TOO_THERAPEUTIC_DIRECTIVE }],
         })
