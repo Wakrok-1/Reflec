@@ -33,6 +33,39 @@ interface CallGeminiOptions {
   temperature?: number
 }
 
+interface GeminiHistoryTurn {
+  role: 'user' | 'model'
+  parts: { text: string }[]
+}
+
+// Gemini's chat API requires history to start with a 'user' turn and
+// strictly alternate user/model from there — Groq's plain messages array
+// never enforced either, so this app's stored history can violate both:
+// a turn whose model call failed after the user's message was already
+// inserted (chat.ts's insert_user_message stage) but before a reply got
+// saved leaves an orphaned user row, so the next real turn lands right
+// after it as a second consecutive user row; and whatever this
+// particular account's very oldest chat_history row turns out to be
+// could be an assistant message with nothing before it. Drop any turns
+// before the first 'user' turn, then coalesce consecutive same-role
+// turns into one so the result always alternates.
+function toGeminiHistory(messages: GeminiMessage[]): GeminiHistoryTurn[] {
+  const startIndex = messages.findIndex((m) => m.role === 'user')
+  const fromFirstUserTurn = startIndex === -1 ? [] : messages.slice(startIndex)
+
+  const history: GeminiHistoryTurn[] = []
+  for (const m of fromFirstUserTurn) {
+    const role: 'user' | 'model' = m.role === 'assistant' ? 'model' : 'user'
+    const last = history[history.length - 1]
+    if (last && last.role === role) {
+      last.parts[0].text += `\n\n${m.content}`
+    } else {
+      history.push({ role, parts: [{ text: m.content }] })
+    }
+  }
+  return history
+}
+
 export async function callGemini({
   systemPrompt,
   messages,
@@ -61,10 +94,7 @@ export async function callGemini({
   // the last one as the message being sent — the same shape callGroq's
   // messages array had (system prompt aside, which Gemini takes out of
   // band via systemInstruction rather than as a message in this list).
-  const history = messages.slice(0, -1).map((m) => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }],
-  }))
+  const history = toGeminiHistory(messages.slice(0, -1))
 
   const lastMessage = messages[messages.length - 1].content
 
