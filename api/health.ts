@@ -106,7 +106,7 @@ async function handleConversationDebug(
     rawModelResponse = await callGemini({
       systemPrompt: geminiSystemPrompt,
       messages: testTurn,
-      maxTokens: analysis.multi_message ? 500 : 800,
+      maxTokens: analysis.multi_message ? 700 : 1500,
       temperature: analysis.multi_message ? 0.85 : 0.8,
       jsonMode: analysis.multi_message,
     })

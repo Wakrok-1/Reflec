@@ -124,6 +124,14 @@ async function generateWithModel(
   // nothing here carries state between attempts that needs preserving.
   const chat = model.startChat({ history })
   const result = await chat.sendMessage(lastMessage)
+  // A response cut off by maxOutputTokens is a normal 200 OK, not an
+  // error — Gemini just stops mid-sentence with finishReason MAX_TOKENS
+  // (confirmed in production: a reply visibly trailing off, "You've ,").
+  // Logging it here makes future truncations diagnosable from Vercel
+  // logs directly instead of guessing from a user report.
+  if (result.response.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
+    console.error(`Gemini ${modelName} response was truncated by maxOutputTokens (${maxTokens})`)
+  }
   return result.response.text()
 }
 

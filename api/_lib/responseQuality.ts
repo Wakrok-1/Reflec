@@ -90,12 +90,24 @@ const THERAPY_SPEAK_RULES: { test: (lower: string) => boolean; points: number }[
   { test: (t) => t.trimStart().startsWith('i hear'), points: 3 },
   { test: (t) => t.includes('it sounds like'), points: 2 },
   { test: (t) => t.includes('it feels like you'), points: 2 },
+  // "it feels like a [heavy/quiet/complicated] [noun]" is the same
+  // clinical-reflection opener as "it feels like you", just naming the
+  // feeling as an abstract noun instead — confirmed in production:
+  // "It feels like a heavy, quiet uncertainty..." scored 0 under the
+  // narrower "it feels like you" rule alone.
+  { test: (t) => /\bit feels like a\b/.test(t), points: 2 },
   { test: (t) => t.includes("i'm noticing") || t.includes('i am noticing'), points: 2 },
   { test: (t) => t.includes('sitting with'), points: 1 },
   { test: (t) => t.includes("what's coming up for you") || t.includes('what is coming up for you'), points: 2 },
   { test: (t) => t.includes('your feelings are valid'), points: 3 },
   { test: (t) => t.includes('take some time'), points: 1 },
   { test: (t) => t.includes('that must be'), points: 1 },
+  // "holding both X and Y" is a textbook therapist move for naming two
+  // feelings at once — reads as clinical distance even without any other
+  // banned phrase (the same production example above: "you're holding
+  // both the relief of finishing and the blank space of what comes next").
+  { test: (t) => t.includes('holding both'), points: 2 },
+  { test: (t) => t.includes('holding space'), points: 2 },
 ]
 
 export function scoreTherapySpeak(text: string): number {
@@ -114,7 +126,17 @@ export function scoreTherapySpeak(text: string): number {
 // boundaries (\b) matter here — without them "i hear" would also match
 // inside "i heard", which is a different, unrelated word.
 const AUTO_REJECT_OPENING_WORD_COUNT = 6
-const AUTO_REJECT_PATTERNS: RegExp[] = [/\bi\s+hear\b/i, /\bi\s+can\s+hear\b/i, /\bi'?m\s+hearing\b/i]
+const AUTO_REJECT_PATTERNS: RegExp[] = [
+  /\bi\s+hear\b/i,
+  /\bi\s+can\s+hear\b/i,
+  /\bi'?m\s+hearing\b/i,
+  // Same class of opener as "I hear" — a clinical-reflection tell that's
+  // diagnostic enough on its own not to need a second banned phrase to
+  // cross the threshold (production example: "It feels like a heavy,
+  // quiet uncertainty..." opened a response with nothing else on the
+  // list flagged deeper in).
+  /\bit\s+feels\s+like\s+a\b/i,
+]
 
 export function isAutoRejectedTherapySpeak(text: string): boolean {
   const openingWords = text.trim().split(/\s+/).slice(0, AUTO_REJECT_OPENING_WORD_COUNT).join(' ')

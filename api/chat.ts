@@ -302,7 +302,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const geminiSystemPrompt = systemPromptParts.join('\n\n')
     const conversationMessages: GeminiMessage[] = body.messages
 
-    const responseMaxTokens = reflectionRequested ? 1200 : analysis.multi_message ? 500 : 800
+    // These budgets were originally sized tight for Groq's 8,000 TPM
+    // free-tier ceiling — 800 for a normal reply visibly wasn't enough
+    // (confirmed in production: a reply cut off mid-sentence, finishReason
+    // MAX_TOKENS). Gemini's free tier isn't token-scarce the same way, so
+    // there's no longer a reason to keep these this tight.
+    const responseMaxTokens = reflectionRequested ? 2000 : analysis.multi_message ? 700 : 1500
 
     // Single main-model call (PRD v1.6). Gemini's 1M token
     // context and generous free tier are why this moved off Groq — the
