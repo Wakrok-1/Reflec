@@ -17,9 +17,17 @@
 // this again whenever Google retires this one too — check
 // https://ai.google.dev/gemini-api/docs/models for the current GA name
 // if this starts 404ing again.
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import { GoogleGenerativeAI, GoogleGenerativeAIFetchError } from '@google/generative-ai'
 
 const GEMINI_MODEL = 'gemini-3.7-flash'
+
+// Google's API returns 503 ("This model is currently experiencing high
+// demand... try again later") fairly routinely, and 429 for genuine rate
+// limiting — both are usually gone within a couple of seconds, so one
+// retry after a short pause turns most of these into a slightly slower
+// success instead of a failed turn.
+const RETRYABLE_STATUS_CODES = new Set([429, 503])
+const RETRY_DELAY_MS = 1500
 
 export interface GeminiMessage {
   role: 'user' | 'assistant'
@@ -99,6 +107,16 @@ export async function callGemini({
   const lastMessage = messages[messages.length - 1].content
 
   const chat = model.startChat({ history })
-  const result = await chat.sendMessage(lastMessage)
-  return result.response.text()
+  try {
+    const result = await chat.sendMessage(lastMessage)
+    return result.response.text()
+  } catch (err) {
+    if (!(err instanceof GoogleGenerativeAIFetchError) || err.status === undefined || !RETRYABLE_STATUS_CODES.has(err.status)) {
+      throw err
+    }
+    console.error(`Gemini request failed with a transient ${err.status}, retrying once after ${RETRY_DELAY_MS}ms`, err.message)
+    await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
+    const result = await chat.sendMessage(lastMessage)
+    return result.response.text()
+  }
 }
