@@ -317,6 +317,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         messages: conversationMessages,
         maxTokens: responseMaxTokens,
         temperature: 0.85,
+        jsonMode: analysis.multi_message,
       })
     } catch (err) {
       console.error('chat failed at stage "call_main_model"', err)
@@ -350,6 +351,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           messages: conversationMessages,
           maxTokens: responseMaxTokens,
           temperature: 0.85,
+          jsonMode: analysis.multi_message,
         })
         finalRaw = regeneratedRaw
         finalPlain = extractPlainText(finalRaw, analysis.multi_message)

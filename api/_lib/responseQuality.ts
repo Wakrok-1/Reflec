@@ -11,11 +11,34 @@ interface ParsedMultiMessage {
   delay: number
 }
 
+// Salvages readable text out of a multi-message JSON blob that failed to
+// parse — most commonly a response that ran past max_tokens mid-string
+// before its JSON could close (confirmed in production: a raw, truncated
+// `{"messages": [ { "text": "..."` landing straight in the chat UI once
+// JSON.parse threw and the old fallback dumped the whole unparsed string
+// verbatim). Regex-matches every "text": "..." field it can find,
+// tolerating an unterminated final string — no trailing quote required —
+// so a cut-off response still surfaces whatever the model actually wrote
+// instead of raw JSON syntax.
+function salvagePartialMultiMessageJson(raw: string): ParsedMultiMessage[] | null {
+  const textFieldPattern = /"text"\s*:\s*"((?:\\.|[^"\\])*)/g
+  const texts: string[] = []
+  let match: RegExpExecArray | null
+  while ((match = textFieldPattern.exec(raw)) !== null) {
+    const unescaped = match[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\').trim()
+    if (unescaped) texts.push(unescaped)
+  }
+  if (texts.length === 0) return null
+  return texts.slice(0, 3).map((text, i) => ({ text, delay: i * 800 }))
+}
+
 // Tolerant parse of the multi-message JSON shape the main model is asked
 // for when analysis.multi_message is true — accepts a bare array instead
-// of {"messages": [...]}, or a "message"/"content" key instead of "text",
-// and falls back to treating the whole raw string as one message if the
-// JSON doesn't parse at all.
+// of {"messages": [...]}, or a "message"/"content" key instead of "text".
+// If the JSON doesn't parse at all, tries to salvage actual text content
+// out of it before giving up and treating the whole raw string as one
+// message (which, for malformed JSON, means dumping visible JSON syntax
+// into the chat — a last resort, not the common case).
 export function parseMultiMessageJson(raw: string): ParsedMultiMessage[] {
   let parsedMessages: ParsedMultiMessage[] = []
   try {
@@ -38,8 +61,7 @@ export function parseMultiMessageJson(raw: string): ParsedMultiMessage[] {
         }))
     }
   } catch {
-    // Malformed multi-message JSON — fall back to the raw text as one
-    // message rather than failing the whole request over response shape.
+    parsedMessages = salvagePartialMultiMessageJson(raw) ?? []
   }
   if (parsedMessages.length === 0) {
     parsedMessages = [{ text: raw.trim(), delay: 0 }]

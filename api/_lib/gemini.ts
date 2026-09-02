@@ -47,6 +47,14 @@ interface CallGeminiOptions {
   messages: GeminiMessage[]
   maxTokens?: number
   temperature?: number
+  // Forces Gemini's own JSON-object output mode (generationConfig
+  // .responseMimeType) for the multi-message reply shape — the
+  // equivalent of Groq's response_format: json_object. Without this, a
+  // multi-message request is pure prompt-following with no structural
+  // enforcement, and a model can wander past maxTokens mid-string before
+  // ever closing its JSON — confirmed in production via a raw, truncated
+  // `{"messages": [ { "text": "...` landing straight in the chat UI.
+  jsonMode?: boolean
 }
 
 interface GeminiHistoryTurn {
@@ -98,6 +106,7 @@ async function generateWithModel(
   lastMessage: string,
   maxTokens: number,
   temperature: number,
+  jsonMode: boolean,
 ): Promise<string> {
   const genAI = new GoogleGenerativeAI(apiKey)
   const model = genAI.getGenerativeModel({
@@ -106,6 +115,7 @@ async function generateWithModel(
     generationConfig: {
       maxOutputTokens: maxTokens,
       temperature,
+      ...(jsonMode ? { responseMimeType: 'application/json' } : {}),
     },
   })
   // Fresh ChatSession per attempt — safe to recreate for a retry/fallback
@@ -122,6 +132,7 @@ export async function callGemini({
   messages,
   maxTokens = 1000,
   temperature = 0.9,
+  jsonMode = false,
 }: CallGeminiOptions): Promise<string> {
   const apiKey = process.env.GOOGLE_AI_API_KEY
   if (!apiKey) {
@@ -139,7 +150,7 @@ export async function callGemini({
   const lastMessage = messages[messages.length - 1].content
 
   const attempt = (modelName: string) =>
-    generateWithModel(apiKey, modelName, systemPrompt, history, lastMessage, maxTokens, temperature)
+    generateWithModel(apiKey, modelName, systemPrompt, history, lastMessage, maxTokens, temperature, jsonMode)
 
   try {
     return await attempt(GEMINI_PRIMARY_MODEL)

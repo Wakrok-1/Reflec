@@ -108,6 +108,7 @@ async function handleConversationDebug(
       messages: testTurn,
       maxTokens: analysis.multi_message ? 500 : 800,
       temperature: analysis.multi_message ? 0.85 : 0.8,
+      jsonMode: analysis.multi_message,
     })
   } catch (err) {
     res.status(502).json({ error: 'Gemini API request failed', detail: String(err) })
